@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+    <File Path="Directory.Build.props" />
+    <File Path="LICENSE" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Nodsoft.AspNetCore.SignalR.PostgreSQL/Nodsoft.AspNetCore.SignalR.PostgreSQL.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Nodsoft.AspNetCore.SignalR.PostgreSQL.IntegrationTests/Nodsoft.AspNetCore.SignalR.PostgreSQL.IntegrationTests.csproj" />
+  </Folder>
+</Solution>
