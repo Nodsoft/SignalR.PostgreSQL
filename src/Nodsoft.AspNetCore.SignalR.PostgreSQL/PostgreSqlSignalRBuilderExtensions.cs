@@ -51,12 +51,12 @@ public static class PostgreSqlSignalRBuilderExtensions
         ArgumentNullException.ThrowIfNull(configureOptions);
 
         builder.Services.Configure(configureOptions);
-        RegisterBackplane(builder.Services);
+        builder.Services.RegisterBackplane();
         return builder;
     }
 
-    private static void RegisterBackplane(IServiceCollection services)
+    private static void RegisterBackplane(this IServiceCollection services)
     {
-        services.TryAddSingleton(typeof(HubLifetimeManager<>), typeof(PostgreSqlHubLifetimeManager<>));
+        services.AddSingleton(typeof(HubLifetimeManager<>), typeof(PostgreSqlHubLifetimeManager<>));
     }
 }

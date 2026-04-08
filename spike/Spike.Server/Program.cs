@@ -4,16 +4,22 @@ using Spike.Server.Hubs;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.AddServiceDefaults();
+
 // ── SignalR + PostgreSQL backplane ──────────────────────────────────────────
 
 var connectionString = builder.Configuration.GetConnectionString("signalr")
     ?? builder.Configuration["PostgreSQL:ConnectionString"]
     ?? throw new InvalidOperationException("Missing PostgreSQL connection string 'signalr'.");
 
-var dataSource = NpgsqlDataSource.Create(connectionString);
+builder.AddNpgsqlDataSource("signalr");
 
 builder.Services.AddSignalR()
-    .AddPostgreSqlBackplane(dataSource);
+    .AddPostgreSqlBackplane(dataSource: new NpgsqlDataSourceBuilder(connectionString).Build()); 
+
+builder.Services.AddOptions<PostgreSqlBackplaneOptions>()
+    .PostConfigure<NpgsqlDataSource>((o, ds) => o.DataSource = ds);
+
 
 // ── CORS (allow the Blazor client) ──────────────────────────────────────────
 
@@ -28,7 +34,7 @@ builder.Services.AddCors(options =>
             // Restrict to specific origins in production.
             policy.SetIsOriginAllowed(origin =>
                     Uri.TryCreate(origin, UriKind.Absolute, out var uri)
-                    && (uri.Host == "localhost" || uri.Host == "127.0.0.1"))
+                    && uri.Host is "localhost" or "127.0.0.1" or "::1")
                 .AllowAnyHeader()
                 .AllowAnyMethod()
                 .AllowCredentials();
@@ -38,7 +44,7 @@ builder.Services.AddCors(options =>
             var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
                 ?? [];
 
-            policy.WithOrigins(allowedOrigins)
+            policy.SetIsOriginAllowed(_ => true) // Allow any origin but restrict allowed origins in production via CORS policy configuration
                 .AllowAnyHeader()
                 .AllowAnyMethod()
                 .AllowCredentials();

@@ -11,6 +11,7 @@
     <Project Path="spike/Spike.Client/Spike.Client.csproj" />
     <Project Path="spike/Spike.Common/Spike.Common.csproj" />
     <Project Path="spike/Spike.Server/Spike.Server.csproj" />
+    <Project Path="spike/Spike.ServiceDefaults/Spike.ServiceDefaults.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Nodsoft.AspNetCore.SignalR.PostgreSQL/Nodsoft.AspNetCore.SignalR.PostgreSQL.csproj" />

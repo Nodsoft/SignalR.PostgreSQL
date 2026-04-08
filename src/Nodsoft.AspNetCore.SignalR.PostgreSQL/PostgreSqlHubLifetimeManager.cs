@@ -74,6 +74,8 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
                 [connection.ConnectionId] = connection;
         }
 
+        _logger.LogInformation("Connection '{ConnectionId}' connected to hub '{HubName}'", connection.ConnectionId, typeof(THub).Name);
+        
         return Task.CompletedTask;
     }
 

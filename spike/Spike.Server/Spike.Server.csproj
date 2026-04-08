@@ -8,12 +8,13 @@
 
     <ItemGroup>
         <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.3" />
-        <PackageReference Include="Npgsql" Version="10.0.2" />
+        <PackageReference Include="Aspire.Npgsql" Version="13.2.1" />
     </ItemGroup>
 
     <ItemGroup>
         <ProjectReference Include="..\..\src\Nodsoft.AspNetCore.SignalR.PostgreSQL\Nodsoft.AspNetCore.SignalR.PostgreSQL.csproj" />
         <ProjectReference Include="..\Spike.Common\Spike.Common.csproj" />
+        <ProjectReference Include="..\Spike.ServiceDefaults\Spike.ServiceDefaults.csproj" />
     </ItemGroup>
 
 </Project>

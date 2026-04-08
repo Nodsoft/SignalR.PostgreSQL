@@ -13,6 +13,7 @@
 
     <ItemGroup>
       <ProjectReference Include="..\Spike.Common\Spike.Common.csproj" />
+      <ProjectReference Include="..\Spike.ServiceDefaults\Spike.ServiceDefaults.csproj" />
     </ItemGroup>
 
 </Project>
