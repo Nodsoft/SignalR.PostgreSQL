@@ -8,7 +8,12 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.5" />
+    </ItemGroup>
+
+    <ItemGroup>
       <ProjectReference Include="..\Spike.Common\Spike.Common.csproj" />
+      <ProjectReference Include="..\Spike.ServiceDefaults\Spike.ServiceDefaults.csproj" />
     </ItemGroup>
 
 </Project>
