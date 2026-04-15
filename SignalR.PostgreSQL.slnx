@@ -18,5 +18,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Nodsoft.AspNetCore.SignalR.PostgreSQL.IntegrationTests/Nodsoft.AspNetCore.SignalR.PostgreSQL.IntegrationTests.csproj" />
+    <Project Path="tests/Nodsoft.AspNetCore.SignalR.PostgreSQL.Tests/Nodsoft.AspNetCore.SignalR.PostgreSQL.Tests.csproj" />
   </Folder>
 </Solution>
