@@ -18,7 +18,7 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     [Fact]
     public void Constructor_ThrowsInvalidOperationException_WhenNeitherDataSourceNorConnectionStringIsConfigured()
     {
-        var options = Options.Create(new PostgreSqlBackplaneOptions());
+        IOptions<PostgreSqlBackplaneOptions> options = Options.Create(new PostgreSqlBackplaneOptions());
 
         Assert.Throws<InvalidOperationException>(
             () => new PostgreSqlHubLifetimeManager<TestHub>(options, NullLogger<PostgreSqlHubLifetimeManager<TestHub>>.Instance));
@@ -35,12 +35,12 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     [Fact]
     public void Constructor_UsesConnectionString_WhenConnectionStringIsProvided()
     {
-        var options = Options.Create(new PostgreSqlBackplaneOptions
+        IOptions<PostgreSqlBackplaneOptions> options = Options.Create(new PostgreSqlBackplaneOptions
         {
             ConnectionString = "Host=127.0.0.1;Port=9;Database=test;Timeout=1;"
         });
 
-        _manager = new PostgreSqlHubLifetimeManager<TestHub>(options, NullLogger<PostgreSqlHubLifetimeManager<TestHub>>.Instance);
+        _manager = new(options, NullLogger<PostgreSqlHubLifetimeManager<TestHub>>.Instance);
         Assert.NotNull(_manager);
     }
 
@@ -50,7 +50,7 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task OnConnectedAsync_TracksConnection()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn = new FakeHubConnectionContext("conn-1");
+        FakeHubConnectionContext conn = new("conn-1");
 
         await _manager.OnConnectedAsync(conn);
 
@@ -60,8 +60,8 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
         // And verify by confirming the connection receives a message routed by connection ID.
         ManagerFactory.InvokeDeliverToConnection(_manager, "conn-1", "ping", []);
 
-        var message = Assert.Single(conn.ReceivedMessages);
-        var invocation = Assert.IsType<InvocationMessage>(message);
+        HubMessage message = Assert.Single(conn.ReceivedMessages);
+        InvocationMessage invocation = Assert.IsType<InvocationMessage>(message);
         Assert.Equal("ping", invocation.Target);
     }
 
@@ -69,7 +69,7 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task OnConnectedAsync_WithUserIdentifier_TracksUserConnection()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn = new FakeHubConnectionContext("conn-user-1", userId: "alice");
+        FakeHubConnectionContext conn = new("conn-user-1", userId: "alice");
 
         await _manager.OnConnectedAsync(conn);
 
@@ -82,7 +82,7 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task OnDisconnectedAsync_RemovesConnectionFromTracker()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn = new FakeHubConnectionContext("conn-disc-1");
+        FakeHubConnectionContext conn = new("conn-disc-1");
 
         await _manager.OnConnectedAsync(conn);
         await _manager.OnDisconnectedAsync(conn);
@@ -96,7 +96,7 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task OnDisconnectedAsync_RemovesConnectionFromUserTracker()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn = new FakeHubConnectionContext("conn-disc-user-1", userId: "bob");
+        FakeHubConnectionContext conn = new("conn-disc-user-1", userId: "bob");
 
         await _manager.OnConnectedAsync(conn);
         await _manager.OnDisconnectedAsync(conn);
@@ -110,7 +110,7 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task OnDisconnectedAsync_RemovesConnectionFromAllGroups()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn = new FakeHubConnectionContext("conn-grp-disc-1");
+        FakeHubConnectionContext conn = new("conn-grp-disc-1");
 
         await _manager.OnConnectedAsync(conn);
         await _manager.AddToGroupAsync("conn-grp-disc-1", "room-a", TestContext.Current.CancellationToken);
@@ -129,7 +129,7 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task AddToGroupAsync_AddsConnectionToGroup()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn = new FakeHubConnectionContext("conn-grp-1");
+        FakeHubConnectionContext conn = new("conn-grp-1");
 
         await _manager.OnConnectedAsync(conn);
         await _manager.AddToGroupAsync("conn-grp-1", "group-x", TestContext.Current.CancellationToken);
@@ -156,7 +156,7 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task RemoveFromGroupAsync_RemovesConnectionFromGroup()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn = new FakeHubConnectionContext("conn-rm-grp-1");
+        FakeHubConnectionContext conn = new("conn-rm-grp-1");
 
         await _manager.OnConnectedAsync(conn);
         await _manager.AddToGroupAsync("conn-rm-grp-1", "group-y", TestContext.Current.CancellationToken);
@@ -171,7 +171,7 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task RemoveFromGroupAsync_IgnoresUnknownGroup()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn = new FakeHubConnectionContext("conn-rm-no-grp-1");
+        FakeHubConnectionContext conn = new("conn-rm-no-grp-1");
         await _manager.OnConnectedAsync(conn);
 
         // Should not throw even when the group does not exist.
@@ -184,9 +184,9 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task DeliverToAll_DeliversToAllTrackedConnections()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn1 = new FakeHubConnectionContext("c1");
-        var conn2 = new FakeHubConnectionContext("c2");
-        var conn3 = new FakeHubConnectionContext("c3");
+        FakeHubConnectionContext conn1 = new("c1");
+        FakeHubConnectionContext conn2 = new("c2");
+        FakeHubConnectionContext conn3 = new("c3");
 
         await _manager.OnConnectedAsync(conn1);
         await _manager.OnConnectedAsync(conn2);
@@ -203,9 +203,9 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task DeliverToAll_ExcludesSpecifiedConnectionIds()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn1 = new FakeHubConnectionContext("d1");
-        var conn2 = new FakeHubConnectionContext("d2");
-        var conn3 = new FakeHubConnectionContext("d3");
+        FakeHubConnectionContext conn1 = new("d1");
+        FakeHubConnectionContext conn2 = new("d2");
+        FakeHubConnectionContext conn3 = new("d3");
 
         await _manager.OnConnectedAsync(conn1);
         await _manager.OnConnectedAsync(conn2);
@@ -222,8 +222,8 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task DeliverToConnection_DeliversToCorrectConnection()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn1 = new FakeHubConnectionContext("e1");
-        var conn2 = new FakeHubConnectionContext("e2");
+        FakeHubConnectionContext conn1 = new("e1");
+        FakeHubConnectionContext conn2 = new("e2");
 
         await _manager.OnConnectedAsync(conn1);
         await _manager.OnConnectedAsync(conn2);
@@ -238,7 +238,7 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task DeliverToConnection_IgnoresUnknownConnectionId()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn = new FakeHubConnectionContext("f1");
+        FakeHubConnectionContext conn = new("f1");
         await _manager.OnConnectedAsync(conn);
 
         // Should not throw.
@@ -251,9 +251,9 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task DeliverToGroup_DeliversToAllGroupMembers()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn1 = new FakeHubConnectionContext("g1");
-        var conn2 = new FakeHubConnectionContext("g2");
-        var conn3 = new FakeHubConnectionContext("g3");
+        FakeHubConnectionContext conn1 = new("g1");
+        FakeHubConnectionContext conn2 = new("g2");
+        FakeHubConnectionContext conn3 = new("g3");
 
         await _manager.OnConnectedAsync(conn1);
         await _manager.OnConnectedAsync(conn2);
@@ -272,8 +272,8 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task DeliverToGroup_ExcludesSpecifiedConnectionIds()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn1 = new FakeHubConnectionContext("h1");
-        var conn2 = new FakeHubConnectionContext("h2");
+        FakeHubConnectionContext conn1 = new("h1");
+        FakeHubConnectionContext conn2 = new("h2");
 
         await _manager.OnConnectedAsync(conn1);
         await _manager.OnConnectedAsync(conn2);
@@ -290,9 +290,9 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task DeliverToUser_DeliversToAllConnectionsOfUser()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn1 = new FakeHubConnectionContext("i1", userId: "charlie");
-        var conn2 = new FakeHubConnectionContext("i2", userId: "charlie");
-        var conn3 = new FakeHubConnectionContext("i3", userId: "dave");
+        FakeHubConnectionContext conn1 = new("i1", userId: "charlie");
+        FakeHubConnectionContext conn2 = new("i2", userId: "charlie");
+        FakeHubConnectionContext conn3 = new("i3", userId: "dave");
 
         await _manager.OnConnectedAsync(conn1);
         await _manager.OnConnectedAsync(conn2);
@@ -320,13 +320,13 @@ public sealed class PostgreSqlHubLifetimeManagerTests : IAsyncDisposable
     public async Task DeliverToConnection_DeliveredInvocationMessage_HasCorrectMethodNameAndArgs()
     {
         _manager = ManagerFactory.Create<TestHub>();
-        var conn = new FakeHubConnectionContext("j1");
+        FakeHubConnectionContext conn = new("j1");
         await _manager.OnConnectedAsync(conn);
 
         ManagerFactory.InvokeDeliverToConnection(_manager, "j1", "testMethod", ["hello", 42]);
 
-        var msg = Assert.Single(conn.ReceivedMessages);
-        var invocation = Assert.IsType<InvocationMessage>(msg);
+        HubMessage msg = Assert.Single(conn.ReceivedMessages);
+        InvocationMessage invocation = Assert.IsType<InvocationMessage>(msg);
         Assert.Equal("testMethod", invocation.Target);
         Assert.Equal(2, invocation.Arguments.Length);
     }

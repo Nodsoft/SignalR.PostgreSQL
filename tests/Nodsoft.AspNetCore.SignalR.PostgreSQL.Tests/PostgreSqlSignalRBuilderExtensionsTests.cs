@@ -15,7 +15,7 @@ public sealed class PostgreSqlSignalRBuilderExtensionsTests
     public void AddPostgreSqlBackplane_DataSource_Throws_WhenBuilderIsNull()
     {
         ISignalRServerBuilder builder = null!;
-        var dataSource = NpgsqlDataSource.Create("Host=localhost");
+        NpgsqlDataSource dataSource = NpgsqlDataSource.Create("Host=localhost");
 
         Assert.Throws<ArgumentNullException>(() => builder.AddPostgreSqlBackplane(dataSource));
     }
@@ -23,8 +23,8 @@ public sealed class PostgreSqlSignalRBuilderExtensionsTests
     [Fact]
     public void AddPostgreSqlBackplane_DataSource_Throws_WhenDataSourceIsNull()
     {
-        var services = new ServiceCollection();
-        var builder = services.AddSignalR();
+        ServiceCollection services = new();
+        ISignalRServerBuilder builder = services.AddSignalR();
 
         Assert.Throws<ArgumentNullException>(() => builder.AddPostgreSqlBackplane((NpgsqlDataSource)null!));
     }
@@ -32,13 +32,13 @@ public sealed class PostgreSqlSignalRBuilderExtensionsTests
     [Fact]
     public void AddPostgreSqlBackplane_DataSource_RegistersHubLifetimeManager()
     {
-        var services = new ServiceCollection();
-        var dataSource = NpgsqlDataSource.Create("Host=localhost");
+        ServiceCollection services = new();
+        NpgsqlDataSource dataSource = NpgsqlDataSource.Create("Host=localhost");
         services.AddSignalR().AddPostgreSqlBackplane(dataSource);
 
         // The backplane appends an open-generic descriptor; LastOrDefault resolves
         // the one that the DI container will actually use.
-        var descriptor = services.LastOrDefault(
+        ServiceDescriptor? descriptor = services.LastOrDefault(
             d => d.ServiceType == typeof(HubLifetimeManager<>));
 
         Assert.NotNull(descriptor);
@@ -62,8 +62,8 @@ public sealed class PostgreSqlSignalRBuilderExtensionsTests
     [InlineData("   ")]
     public void AddPostgreSqlBackplane_ConnectionString_Throws_WhenConnectionStringIsNullOrWhiteSpace(string? cs)
     {
-        var services = new ServiceCollection();
-        var builder = services.AddSignalR();
+        ServiceCollection services = new();
+        ISignalRServerBuilder builder = services.AddSignalR();
 
         // null produces ArgumentNullException (subtype); empty/whitespace produces ArgumentException.
         Assert.ThrowsAny<ArgumentException>(() => builder.AddPostgreSqlBackplane(cs!));
@@ -72,10 +72,10 @@ public sealed class PostgreSqlSignalRBuilderExtensionsTests
     [Fact]
     public void AddPostgreSqlBackplane_ConnectionString_RegistersHubLifetimeManager()
     {
-        var services = new ServiceCollection();
+        ServiceCollection services = new();
         services.AddSignalR().AddPostgreSqlBackplane("Host=localhost;Database=test");
 
-        var descriptor = services.LastOrDefault(
+        ServiceDescriptor? descriptor = services.LastOrDefault(
             d => d.ServiceType == typeof(HubLifetimeManager<>));
 
         Assert.NotNull(descriptor);
@@ -96,8 +96,8 @@ public sealed class PostgreSqlSignalRBuilderExtensionsTests
     [Fact]
     public void AddPostgreSqlBackplane_Action_Throws_WhenActionIsNull()
     {
-        var services = new ServiceCollection();
-        var builder = services.AddSignalR();
+        ServiceCollection services = new();
+        ISignalRServerBuilder builder = services.AddSignalR();
 
         Assert.Throws<ArgumentNullException>(() => builder.AddPostgreSqlBackplane((Action<PostgreSqlBackplaneOptions>)null!));
     }
@@ -105,10 +105,10 @@ public sealed class PostgreSqlSignalRBuilderExtensionsTests
     [Fact]
     public void AddPostgreSqlBackplane_Action_RegistersHubLifetimeManager()
     {
-        var services = new ServiceCollection();
+        ServiceCollection services = new();
         services.AddSignalR().AddPostgreSqlBackplane(o => o.ConnectionString = "Host=localhost;Database=test");
 
-        var descriptor = services.LastOrDefault(
+        ServiceDescriptor? descriptor = services.LastOrDefault(
             d => d.ServiceType == typeof(HubLifetimeManager<>));
 
         Assert.NotNull(descriptor);
@@ -121,12 +121,12 @@ public sealed class PostgreSqlSignalRBuilderExtensionsTests
     [Fact]
     public void AddPostgreSqlBackplane_RegistersOpenGenericLifetimeManager()
     {
-        var services = new ServiceCollection();
+        ServiceCollection services = new();
         services.AddSignalR().AddPostgreSqlBackplane("Host=localhost;Database=test");
 
         // There should be at least one descriptor for HubLifetimeManager<>
         // that points to PostgreSqlHubLifetimeManager<>.
-        var descriptor = services.LastOrDefault(
+        ServiceDescriptor? descriptor = services.LastOrDefault(
             d => d.ServiceType == typeof(HubLifetimeManager<>));
 
         Assert.NotNull(descriptor);

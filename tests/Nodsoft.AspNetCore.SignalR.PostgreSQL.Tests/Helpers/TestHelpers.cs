@@ -38,8 +38,8 @@ internal static class ManagerFactory
         where THub : Hub
     {
         dataSource ??= NpgsqlDataSource.Create(BogusConnectionString);
-        var options = Options.Create(new PostgreSqlBackplaneOptions { DataSource = dataSource });
-        return new PostgreSqlHubLifetimeManager<THub>(options, NullLogger<PostgreSqlHubLifetimeManager<THub>>.Instance);
+        IOptions<PostgreSqlBackplaneOptions> options = Options.Create(new PostgreSqlBackplaneOptions { DataSource = dataSource });
+        return new(options, NullLogger<PostgreSqlHubLifetimeManager<THub>>.Instance);
     }
 
     /// <summary>

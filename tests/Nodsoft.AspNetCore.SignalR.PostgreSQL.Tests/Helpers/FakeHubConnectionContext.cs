@@ -24,7 +24,7 @@ internal sealed class FakeHubConnectionContext : HubConnectionContext
         => _firstMessage.Task.WaitAsync(cancellationToken);
 
     public FakeHubConnectionContext(string connectionId, string? userId = null)
-        : base(new DefaultConnectionContext(connectionId), new HubConnectionContextOptions(), NullLoggerFactory.Instance)
+        : base(new DefaultConnectionContext(connectionId), new(), NullLoggerFactory.Instance)
     {
         if (userId is not null)
         {
