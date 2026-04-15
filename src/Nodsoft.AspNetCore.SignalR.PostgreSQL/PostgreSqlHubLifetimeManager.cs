@@ -17,24 +17,52 @@ namespace Nodsoft.AspNetCore.SignalR.PostgreSQL;
 public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub>, IAsyncDisposable
     where THub : Hub
 {
+    /// <summary>A unique identifier for this server instance, used to avoid self-delivery of backplane messages.</summary>
     private readonly string _serverInstanceId = Guid.NewGuid().ToString("N");
+
+    /// <summary>The PostgreSQL LISTEN/NOTIFY channel name derived from the hub type (e.g. <c>signalr__chathub</c>).</summary>
     private readonly string _channelName;
 
+    /// <summary>All active connections on this server instance, keyed by connection ID.</summary>
     private readonly ConcurrentDictionary<string, HubConnectionContext> _connections = new(StringComparer.Ordinal);
+
+    /// <summary>Group membership map: group name → (connection ID → connection).</summary>
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, HubConnectionContext>> _groups
         = new(StringComparer.Ordinal);
+
+    /// <summary>User connection map: user identifier → (connection ID → connection).</summary>
     private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, HubConnectionContext>> _users
         = new(StringComparer.Ordinal);
 
+    /// <summary>Npgsql data source used for opening NOTIFY command connections and the LISTEN connection.</summary>
     private readonly NpgsqlDataSource _dataSource;
+
+    /// <summary>Logger for diagnostic output.</summary>
     private readonly ILogger<PostgreSqlHubLifetimeManager<THub>> _logger;
 
+    /// <summary>The dedicated connection used for the background LISTEN loop.</summary>
     private NpgsqlConnection? _listenConnection;
+
+    /// <summary>The background task running the LISTEN loop.</summary>
     private Task? _listenTask;
+
+    /// <summary>Cancellation source that shuts down the LISTEN loop on disposal.</summary>
     private readonly CancellationTokenSource _cts = new();
 
+    /// <summary>Shared JSON serializer options used for both serializing and deserializing backplane payloads.</summary>
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
 
+    /// <summary>
+    /// Initializes a new <see cref="PostgreSqlHubLifetimeManager{THub}"/>, validates configuration,
+    /// and starts the background LISTEN loop.
+    /// </summary>
+    /// <param name="options">Backplane configuration (data source or connection string).</param>
+    /// <param name="logger">Logger for diagnostics.</param>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when neither <see cref="PostgreSqlBackplaneOptions.DataSource"/> nor
+    /// <see cref="PostgreSqlBackplaneOptions.ConnectionString"/> is configured,
+    /// or when the hub type name contains characters that are unsafe for a PostgreSQL channel identifier.
+    /// </exception>
     public PostgreSqlHubLifetimeManager(
         IOptions<PostgreSqlBackplaneOptions> options,
         ILogger<PostgreSqlHubLifetimeManager<THub>> logger)
@@ -64,6 +92,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     // ── Connection lifecycle ────────────────────────────────────────────────
 
+    /// <inheritdoc/>
     public override Task OnConnectedAsync(HubConnectionContext connection)
     {
         _connections[connection.ConnectionId] = connection;
@@ -79,6 +108,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         return Task.CompletedTask;
     }
 
+    /// <inheritdoc/>
     public override Task OnDisconnectedAsync(HubConnectionContext connection)
     {
         _connections.TryRemove(connection.ConnectionId, out _);
@@ -99,6 +129,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     // ── Group management ────────────────────────────────────────────────────
 
+    /// <inheritdoc/>
     public override Task AddToGroupAsync(string connectionId, string groupName, CancellationToken cancellationToken = default)
     {
         if (_connections.TryGetValue(connectionId, out var connection))
@@ -110,6 +141,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         return Task.CompletedTask;
     }
 
+    /// <inheritdoc/>
     public override Task RemoveFromGroupAsync(string connectionId, string groupName, CancellationToken cancellationToken = default)
     {
         if (_groups.TryGetValue(groupName, out var group))
@@ -122,6 +154,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     // ── Send methods ────────────────────────────────────────────────────────
 
+    /// <inheritdoc/>
     public override Task SendAllAsync(string methodName, object?[] args, CancellationToken cancellationToken = default)
         => PublishAsync(new BackplaneMessage
         {
@@ -131,6 +164,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
             Args = SerializeArgs(args),
         }, cancellationToken);
 
+    /// <inheritdoc/>
     public override Task SendAllExceptAsync(string methodName, object?[] args, IReadOnlyList<string> excludedConnectionIds, CancellationToken cancellationToken = default)
         => PublishAsync(new BackplaneMessage
         {
@@ -141,6 +175,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
             ExcludedConnectionIds = [.. excludedConnectionIds],
         }, cancellationToken);
 
+    /// <inheritdoc/>
     public override Task SendConnectionAsync(string connectionId, string methodName, object?[] args, CancellationToken cancellationToken = default)
         => PublishAsync(new BackplaneMessage
         {
@@ -151,6 +186,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
             Filter = connectionId,
         }, cancellationToken);
 
+    /// <inheritdoc/>
     public override Task SendConnectionsAsync(IReadOnlyList<string> connectionIds, string methodName, object?[] args, CancellationToken cancellationToken = default)
         => PublishAsync(new BackplaneMessage
         {
@@ -161,6 +197,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
             Filters = [.. connectionIds],
         }, cancellationToken);
 
+    /// <inheritdoc/>
     public override Task SendGroupAsync(string groupName, string methodName, object?[] args, CancellationToken cancellationToken = default)
         => PublishAsync(new BackplaneMessage
         {
@@ -171,6 +208,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
             Filter = groupName,
         }, cancellationToken);
 
+    /// <inheritdoc/>
     public override Task SendGroupExceptAsync(string groupName, string methodName, object?[] args, IReadOnlyList<string> excludedConnectionIds, CancellationToken cancellationToken = default)
         => PublishAsync(new BackplaneMessage
         {
@@ -182,6 +220,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
             ExcludedConnectionIds = [.. excludedConnectionIds],
         }, cancellationToken);
 
+    /// <inheritdoc/>
     public override Task SendGroupsAsync(IReadOnlyList<string> groupNames, string methodName, object?[] args, CancellationToken cancellationToken = default)
         => PublishAsync(new BackplaneMessage
         {
@@ -192,6 +231,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
             Filters = [.. groupNames],
         }, cancellationToken);
 
+    /// <inheritdoc/>
     public override Task SendUserAsync(string userId, string methodName, object?[] args, CancellationToken cancellationToken = default)
         => PublishAsync(new BackplaneMessage
         {
@@ -202,6 +242,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
             Filter = userId,
         }, cancellationToken);
 
+    /// <inheritdoc/>
     public override Task SendUsersAsync(IReadOnlyList<string> userIds, string methodName, object?[] args, CancellationToken cancellationToken = default)
         => PublishAsync(new BackplaneMessage
         {
@@ -214,6 +255,11 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     // ── Internal helpers ────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Serializes <paramref name="message"/> as a JSON payload and publishes it
+    /// to the PostgreSQL notification channel via <c>pg_notify</c>.
+    /// Payloads exceeding the PostgreSQL 8 KB limit are dropped with a warning.
+    /// </summary>
     private async Task PublishAsync(BackplaneMessage message, CancellationToken cancellationToken)
     {
         var payload = JsonSerializer.Serialize(message, _jsonOptions);
@@ -230,12 +276,18 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         await cmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    /// <summary>Serializes the given argument array to <see cref="JsonElement"/> values suitable for JSON transport.</summary>
     private static JsonElement[] SerializeArgs(object?[] args)
         => args.Select(a => JsonSerializer.SerializeToElement(a, _jsonOptions)).ToArray();
 
+    /// <summary>Converts deserialized <see cref="JsonElement"/> values back to an object array for hub invocation.</summary>
     private static object?[] DeserializeArgs(JsonElement[] elements)
         => elements.Select(e => (object?)e).ToArray();
 
+    /// <summary>
+    /// Background loop that opens a dedicated PostgreSQL connection and issues a LISTEN command
+    /// for the hub's notification channel. Automatically reconnects after transient failures.
+    /// </summary>
     private async Task StartListeningAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -275,6 +327,10 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         }
     }
 
+    /// <summary>
+    /// Handles a PostgreSQL notification event by deserializing the payload into a
+    /// <see cref="BackplaneMessage"/> and routing it to the appropriate local connections.
+    /// </summary>
     private void OnNotification(object sender, NpgsqlNotificationEventArgs e)
     {
         BackplaneMessage? message;
@@ -349,6 +405,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         }
     }
 
+    /// <summary>Delivers a hub method invocation to all locally tracked connections, optionally excluding some.</summary>
     private void DeliverToAll(string methodName, object?[] args, IReadOnlyList<string> excluded)
     {
         var excludedSet = excluded.Count > 0 ? new HashSet<string>(excluded, StringComparer.Ordinal) : null;
@@ -362,6 +419,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         }
     }
 
+    /// <summary>Delivers a hub method invocation to a single locally tracked connection by its ID.</summary>
     private void DeliverToConnection(string connectionId, string methodName, object?[] args)
     {
         if (_connections.TryGetValue(connectionId, out var connection))
@@ -370,6 +428,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         }
     }
 
+    /// <summary>Delivers a hub method invocation to all locally tracked connections in a group, optionally excluding some.</summary>
     private void DeliverToGroup(string groupName, string methodName, object?[] args, IReadOnlyList<string> excluded)
     {
         if (_groups.TryGetValue(groupName, out var group))
@@ -386,6 +445,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         }
     }
 
+    /// <summary>Delivers a hub method invocation to all locally tracked connections belonging to a user.</summary>
     private void DeliverToUser(string userId, string methodName, object?[] args)
     {
         if (_users.TryGetValue(userId, out var userConnections))
@@ -397,6 +457,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         }
     }
 
+    /// <summary>Writes a hub method invocation message directly to the given connection, suppressing non-fatal transport errors.</summary>
     private async Task WriteToConnectionAsync(HubConnectionContext connection, string methodName, object?[] args)
     {
         try
@@ -411,6 +472,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     // ── Disposal ─────────────────────────────────────────────────────────────
 
+    /// <inheritdoc/>
     public async ValueTask DisposeAsync()
     {
         await _cts.CancelAsync();
