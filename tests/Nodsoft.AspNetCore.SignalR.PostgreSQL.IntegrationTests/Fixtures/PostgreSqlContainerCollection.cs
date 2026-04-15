@@ -1,4 +1,4 @@
-namespace Nodsoft.AspNetCore.SignalR.PostgreSQL.IntegrationTests;
+namespace Nodsoft.AspNetCore.SignalR.PostgreSQL.IntegrationTests.Fixtures;
 
 /// <summary>
 /// xUnit v3 collection definition that associates <see cref="PostgreSqlContainerFixture"/>

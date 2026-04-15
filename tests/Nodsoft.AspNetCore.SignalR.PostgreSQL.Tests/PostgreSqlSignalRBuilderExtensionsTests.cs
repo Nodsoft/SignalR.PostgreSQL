@@ -1,5 +1,4 @@
 using Microsoft.Extensions.DependencyInjection;
-using Nodsoft.AspNetCore.SignalR.PostgreSQL.Tests.Helpers;
 
 namespace Nodsoft.AspNetCore.SignalR.PostgreSQL.Tests;
 

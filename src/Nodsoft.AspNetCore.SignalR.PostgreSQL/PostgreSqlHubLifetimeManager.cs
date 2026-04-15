@@ -1,11 +1,9 @@
 using System.Collections.Concurrent;
-using System.Text.Json;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Protocol;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Nodsoft.AspNetCore.SignalR.PostgreSQL.Internal;
-using Npgsql;
 
 namespace Nodsoft.AspNetCore.SignalR.PostgreSQL;
 
