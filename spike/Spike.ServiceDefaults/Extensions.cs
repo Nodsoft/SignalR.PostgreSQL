@@ -69,7 +69,7 @@ public static class Extensions
                             && !context.Request.Path.StartsWithSegments(AlivenessEndpointPath)
                             // Exclude Blazor from tracing
                             && !context.Request.Path.StartsWithSegments("/_blazor")
-                            && !context.Request.Path.StartsWithSegments("/_framework    ")
+                            && !context.Request.Path.StartsWithSegments("/_framework")
                     )
                     // Uncomment the following line to enable gRPC instrumentation (requires the OpenTelemetry.Instrumentation.GrpcNetClient package)
                     //.AddGrpcClientInstrumentation()
