@@ -48,22 +48,22 @@ builder.Services.AddSignalR()
 
 **Option B — `NpgsqlDataSource` (recommended)**
 
-Provide a pre-configured `NpgsqlDataSource`, for example one registered via the Npgsql Aspire integration or another DI extension:
+Provide a pre-configured `NpgsqlDataSource`, for example one registered via the Npgsql Aspire integration or another DI extension. Because the `AddPostgreSqlBackplane` overloads do not accept a DI factory delegate, use `PostConfigure` to wire the DI-registered data source into the backplane options after registration:
 
 ```csharp
 // Register the data source (e.g. via Npgsql.DependencyInjection or Aspire)
 builder.AddNpgsqlDataSource("signalr");
 
-// Retrieve it and pass it to the backplane
+// Register the backplane (connection string acts as a placeholder; PostConfigure overrides it)
 builder.Services.AddSignalR()
-    .AddPostgreSqlBackplane(sp =>
-    {
-        var ds = sp.GetRequiredService<NpgsqlDataSource>();
-        return new PostgreSqlBackplaneOptions { DataSource = ds };
-    });
+    .AddPostgreSqlBackplane(options => { /* connection string or data source set below */ });
+
+// Override options with the DI-registered NpgsqlDataSource
+builder.Services.AddOptions<PostgreSqlBackplaneOptions>()
+    .PostConfigure<NpgsqlDataSource>((opts, ds) => opts.DataSource = ds);
 ```
 
-Or, more concisely, using the overload that accepts an `Action<PostgreSqlBackplaneOptions>`:
+Or, if you have the `NpgsqlDataSource` instance at hand, pass it directly:
 
 ```csharp
 NpgsqlDataSource dataSource = NpgsqlDataSource.Create(connectionString);
