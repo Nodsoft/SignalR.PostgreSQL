@@ -5,7 +5,7 @@ namespace Nodsoft.AspNetCore.SignalR.PostgreSQL.Internal;
 /// and consumed by all connected server instances via LISTEN.
 /// Each message encodes a SignalR hub method invocation along with its routing target.
 /// </summary>
-internal sealed class BackplaneMessage
+internal sealed record BackplaneMessage
 {
     /// <summary>
     /// Gets the unique identifier of the server instance that originated this message.
@@ -55,7 +55,7 @@ internal sealed class BackplaneMessage
 /// Describes the routing strategy for a <see cref="BackplaneMessage"/>,
 /// mapping directly to the <c>Send*</c> methods on <see cref="Microsoft.AspNetCore.SignalR.HubLifetimeManager{THub}"/>.
 /// </summary>
-internal enum BackplaneMessageType
+internal enum BackplaneMessageType : byte
 {
     /// <summary>Deliver to all connected clients (corresponds to <c>SendAllAsync</c>).</summary>
     All,

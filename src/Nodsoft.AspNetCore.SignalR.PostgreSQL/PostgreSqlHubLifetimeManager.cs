@@ -7,6 +7,8 @@ using Nodsoft.AspNetCore.SignalR.PostgreSQL.Internal;
 
 namespace Nodsoft.AspNetCore.SignalR.PostgreSQL;
 
+using HubConnectionCtxDictionary = ConcurrentDictionary<string, HubConnectionContext>;
+
 /// <summary>
 /// A SignalR <see cref="HubLifetimeManager{THub}"/> that uses PostgreSQL LISTEN/NOTIFY
 /// to broadcast messages across multiple server instances.
@@ -22,15 +24,13 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     private readonly string _channelName;
 
     /// <summary>All active connections on this server instance, keyed by connection ID.</summary>
-    private readonly ConcurrentDictionary<string, HubConnectionContext> _connections = new(StringComparer.Ordinal);
+    private readonly HubConnectionCtxDictionary _connections = new(StringComparer.Ordinal);
 
     /// <summary>Group membership map: group name → (connection ID → connection).</summary>
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, HubConnectionContext>> _groups
-        = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, HubConnectionCtxDictionary> _groups = new(StringComparer.Ordinal);
 
     /// <summary>User connection map: user identifier → (connection ID → connection).</summary>
-    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, HubConnectionContext>> _users
-        = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, HubConnectionCtxDictionary> _users = new(StringComparer.Ordinal);
 
     /// <summary>Npgsql data source used for opening NOTIFY command connections and the LISTEN connection.</summary>
     private readonly NpgsqlDataSource _dataSource;
@@ -48,7 +48,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     private readonly CancellationTokenSource _cts = new();
 
     /// <summary>Shared JSON serializer options used for both serializing and deserializing backplane payloads.</summary>
-    private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     /// <summary>
     /// Initializes a new <see cref="PostgreSqlHubLifetimeManager{THub}"/>, validates configuration,
@@ -67,7 +67,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     {
         _logger = logger;
 
-        var opts = options.Value;
+        PostgreSqlBackplaneOptions opts = options.Value;
         _dataSource = opts.DataSource
             ?? (opts.ConnectionString is not null
                 ? NpgsqlDataSource.Create(opts.ConnectionString)
@@ -76,7 +76,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
         // Validate the channel name to prevent SQL injection via interpolation.
         // Channel names are derived from hub type names and must only contain safe identifier characters.
-        var rawHubName = typeof(THub).Name.ToLowerInvariant();
+        string rawHubName = typeof(THub).Name.ToLowerInvariant();
         if (!System.Text.RegularExpressions.Regex.IsMatch(rawHubName, @"^[a-z0-9_]+$"))
         {
             throw new InvalidOperationException(
@@ -97,7 +97,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
         if (connection.UserIdentifier is { } userId)
         {
-            _users.GetOrAdd(userId, _ => new ConcurrentDictionary<string, HubConnectionContext>(StringComparer.Ordinal))
+            _users.GetOrAdd(userId, _ => new(StringComparer.Ordinal))
                 [connection.ConnectionId] = connection;
         }
 
@@ -112,12 +112,12 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         _connections.TryRemove(connection.ConnectionId, out _);
 
         if (connection.UserIdentifier is { } userId
-            && _users.TryGetValue(userId, out var userConnections))
+            && _users.TryGetValue(userId, out HubConnectionCtxDictionary? userConnections))
         {
             userConnections.TryRemove(connection.ConnectionId, out _);
         }
 
-        foreach (var group in _groups.Values)
+        foreach (HubConnectionCtxDictionary group in _groups.Values)
         {
             group.TryRemove(connection.ConnectionId, out _);
         }
@@ -130,9 +130,9 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     /// <inheritdoc/>
     public override Task AddToGroupAsync(string connectionId, string groupName, CancellationToken cancellationToken = default)
     {
-        if (_connections.TryGetValue(connectionId, out var connection))
+        if (_connections.TryGetValue(connectionId, out HubConnectionContext? connection))
         {
-            _groups.GetOrAdd(groupName, _ => new ConcurrentDictionary<string, HubConnectionContext>(StringComparer.Ordinal))
+            _groups.GetOrAdd(groupName, _ => new(StringComparer.Ordinal))
                 [connectionId] = connection;
         }
 
@@ -142,7 +142,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     /// <inheritdoc/>
     public override Task RemoveFromGroupAsync(string connectionId, string groupName, CancellationToken cancellationToken = default)
     {
-        if (_groups.TryGetValue(groupName, out var group))
+        if (_groups.TryGetValue(groupName, out HubConnectionCtxDictionary? group))
         {
             group.TryRemove(connectionId, out _);
         }
@@ -154,7 +154,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     /// <inheritdoc/>
     public override Task SendAllAsync(string methodName, object?[] args, CancellationToken cancellationToken = default)
-        => PublishAsync(new BackplaneMessage
+        => PublishAsync(new()
         {
             ServerInstanceId = _serverInstanceId,
             Type = BackplaneMessageType.All,
@@ -164,7 +164,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     /// <inheritdoc/>
     public override Task SendAllExceptAsync(string methodName, object?[] args, IReadOnlyList<string> excludedConnectionIds, CancellationToken cancellationToken = default)
-        => PublishAsync(new BackplaneMessage
+        => PublishAsync(new()
         {
             ServerInstanceId = _serverInstanceId,
             Type = BackplaneMessageType.AllExcept,
@@ -175,7 +175,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     /// <inheritdoc/>
     public override Task SendConnectionAsync(string connectionId, string methodName, object?[] args, CancellationToken cancellationToken = default)
-        => PublishAsync(new BackplaneMessage
+        => PublishAsync(new()
         {
             ServerInstanceId = _serverInstanceId,
             Type = BackplaneMessageType.Connection,
@@ -186,7 +186,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     /// <inheritdoc/>
     public override Task SendConnectionsAsync(IReadOnlyList<string> connectionIds, string methodName, object?[] args, CancellationToken cancellationToken = default)
-        => PublishAsync(new BackplaneMessage
+        => PublishAsync(new()
         {
             ServerInstanceId = _serverInstanceId,
             Type = BackplaneMessageType.Connections,
@@ -197,7 +197,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     /// <inheritdoc/>
     public override Task SendGroupAsync(string groupName, string methodName, object?[] args, CancellationToken cancellationToken = default)
-        => PublishAsync(new BackplaneMessage
+        => PublishAsync(new()
         {
             ServerInstanceId = _serverInstanceId,
             Type = BackplaneMessageType.Group,
@@ -208,7 +208,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     /// <inheritdoc/>
     public override Task SendGroupExceptAsync(string groupName, string methodName, object?[] args, IReadOnlyList<string> excludedConnectionIds, CancellationToken cancellationToken = default)
-        => PublishAsync(new BackplaneMessage
+        => PublishAsync(new()
         {
             ServerInstanceId = _serverInstanceId,
             Type = BackplaneMessageType.GroupExcept,
@@ -220,7 +220,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     /// <inheritdoc/>
     public override Task SendGroupsAsync(IReadOnlyList<string> groupNames, string methodName, object?[] args, CancellationToken cancellationToken = default)
-        => PublishAsync(new BackplaneMessage
+        => PublishAsync(new()
         {
             ServerInstanceId = _serverInstanceId,
             Type = BackplaneMessageType.Groups,
@@ -231,7 +231,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     /// <inheritdoc/>
     public override Task SendUserAsync(string userId, string methodName, object?[] args, CancellationToken cancellationToken = default)
-        => PublishAsync(new BackplaneMessage
+        => PublishAsync(new()
         {
             ServerInstanceId = _serverInstanceId,
             Type = BackplaneMessageType.User,
@@ -242,7 +242,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
     /// <inheritdoc/>
     public override Task SendUsersAsync(IReadOnlyList<string> userIds, string methodName, object?[] args, CancellationToken cancellationToken = default)
-        => PublishAsync(new BackplaneMessage
+        => PublishAsync(new()
         {
             ServerInstanceId = _serverInstanceId,
             Type = BackplaneMessageType.Users,
@@ -260,23 +260,23 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     /// </summary>
     private async Task PublishAsync(BackplaneMessage message, CancellationToken cancellationToken)
     {
-        var payload = JsonSerializer.Serialize(message, _jsonOptions);
+        string payload = JsonSerializer.Serialize(message, JsonOptions);
 
         // PostgreSQL NOTIFY payload is limited to ~8 KB.
         if (payload.Length > 8000)
         {
-            _logger.LogWarning("BackplaneMessage payload exceeds 8 KB and will not be delivered via NOTIFY.");
+            _logger.LogWarning("BackplaneMessage payload exceeds 8 KB and will not be delivered via NOTIFY");
             return;
         }
 
-        await using var cmd = _dataSource.CreateCommand($"SELECT pg_notify('{_channelName}', @payload)");
+        await using NpgsqlCommand cmd = _dataSource.CreateCommand($"SELECT pg_notify('{_channelName}', @payload)");
         cmd.Parameters.AddWithValue("payload", payload);
         await cmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
     /// <summary>Serializes the given argument array to <see cref="JsonElement"/> values suitable for JSON transport.</summary>
     private static JsonElement[] SerializeArgs(object?[] args)
-        => args.Select(a => JsonSerializer.SerializeToElement(a, _jsonOptions)).ToArray();
+        => args.Select(a => JsonSerializer.SerializeToElement(a, JsonOptions)).ToArray();
 
     /// <summary>Converts deserialized <see cref="JsonElement"/> values back to an object array for hub invocation.</summary>
     private static object?[] DeserializeArgs(JsonElement[] elements)
@@ -295,13 +295,13 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
                 _listenConnection = await _dataSource.OpenConnectionAsync(cancellationToken);
                 _listenConnection.Notification += OnNotification;
 
-                await using (var cmd = _listenConnection.CreateCommand())
+                await using (NpgsqlCommand cmd = _listenConnection.CreateCommand())
                 {
                     cmd.CommandText = $"LISTEN \"{_channelName}\"";
                     await cmd.ExecuteNonQueryAsync(cancellationToken);
                 }
 
-                _logger.LogInformation("PostgreSQL backplane listening on channel '{Channel}'.", _channelName);
+                _logger.LogInformation("PostgreSQL backplane listening on channel '{Channel}'", _channelName);
 
                 // Keep the connection alive, processing notifications.
                 while (!cancellationToken.IsCancellationRequested)
@@ -315,7 +315,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "PostgreSQL backplane listener encountered an error. Reconnecting in 5 s.");
+                _logger.LogError(ex, "PostgreSQL backplane listener encountered an error. Reconnecting in 5 s");
                 _listenConnection?.Dispose();
                 _listenConnection = null;
 
@@ -335,11 +335,11 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
         try
         {
-            message = JsonSerializer.Deserialize<BackplaneMessage>(e.Payload, _jsonOptions);
+            message = JsonSerializer.Deserialize<BackplaneMessage>(e.Payload, JsonOptions);
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "Failed to deserialize backplane message.");
+            _logger.LogWarning(ex, "Failed to deserialize backplane message");
             return;
         }
 
@@ -348,8 +348,8 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
             return;
         }
 
-        var args = DeserializeArgs(message.Args);
-        var excluded = message.ExcludedConnectionIds ?? [];
+        object?[] args = DeserializeArgs(message.Args);
+        string[] excluded = message.ExcludedConnectionIds ?? [];
 
         switch (message.Type)
         {
@@ -361,42 +361,42 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
                 DeliverToAll(message.MethodName, args, excluded);
                 break;
 
-            case BackplaneMessageType.Connection when message.Filter is not null:
-                DeliverToConnection(message.Filter, message.MethodName, args);
+            case BackplaneMessageType.Connection when message is { Filter: { } connectionId, MethodName: var methodName }:
+                DeliverToConnection(connectionId, methodName, args);
                 break;
 
-            case BackplaneMessageType.Connections when message.Filters is not null:
-                foreach (var id in message.Filters)
+            case BackplaneMessageType.Connections when message is { Filters: { } connectionIds, MethodName: var methodName }:
+                foreach (string id in connectionIds)
                 {
-                    DeliverToConnection(id, message.MethodName, args);
+                    DeliverToConnection(id, methodName, args);
                 }
 
                 break;
 
-            case BackplaneMessageType.Group when message.Filter is not null:
-                DeliverToGroup(message.Filter, message.MethodName, args, []);
+            case BackplaneMessageType.Group when message is { Filter: { } groupName, MethodName: var methodName }:
+                DeliverToGroup(groupName, methodName, args, excluded);
                 break;
 
-            case BackplaneMessageType.GroupExcept when message.Filter is not null:
-                DeliverToGroup(message.Filter, message.MethodName, args, excluded);
+            case BackplaneMessageType.GroupExcept when message is { Filter: { } groupName, MethodName: var methodName }:
+                DeliverToGroup(groupName, methodName, args, excluded);
                 break;
 
-            case BackplaneMessageType.Groups when message.Filters is not null:
-                foreach (var group in message.Filters)
+            case BackplaneMessageType.Groups when message is { Filters: { } groupNames, MethodName: var methodName }:
+                foreach (string group in groupNames)
                 {
-                    DeliverToGroup(group, message.MethodName, args, []);
+                    DeliverToGroup(group, methodName, args, []);
                 }
 
                 break;
 
-            case BackplaneMessageType.User when message.Filter is not null:
-                DeliverToUser(message.Filter, message.MethodName, args);
+            case BackplaneMessageType.User when message is { Filter: { } userId, MethodName: var methodName }:
+                DeliverToUser(userId, methodName, args);
                 break;
 
-            case BackplaneMessageType.Users when message.Filters is not null:
-                foreach (var userId in message.Filters)
+            case BackplaneMessageType.Users when message is { Filters: { } userIds, MethodName: var methodName }:
+                foreach (string userId in userIds)
                 {
-                    DeliverToUser(userId, message.MethodName, args);
+                    DeliverToUser(userId, methodName, args);
                 }
 
                 break;
@@ -406,9 +406,9 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     /// <summary>Delivers a hub method invocation to all locally tracked connections, optionally excluding some.</summary>
     private void DeliverToAll(string methodName, object?[] args, IReadOnlyList<string> excluded)
     {
-        var excludedSet = excluded.Count > 0 ? new HashSet<string>(excluded, StringComparer.Ordinal) : null;
+        HashSet<string>? excludedSet = excluded.Count > 0 ? new HashSet<string>(excluded, StringComparer.Ordinal) : null;
 
-        foreach (var (id, connection) in _connections)
+        foreach ((string id, HubConnectionContext connection) in _connections)
         {
             if (excludedSet is null || !excludedSet.Contains(id))
             {
@@ -420,7 +420,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     /// <summary>Delivers a hub method invocation to a single locally tracked connection by its ID.</summary>
     private void DeliverToConnection(string connectionId, string methodName, object?[] args)
     {
-        if (_connections.TryGetValue(connectionId, out var connection))
+        if (_connections.TryGetValue(connectionId, out HubConnectionContext? connection))
         {
             _ = WriteToConnectionAsync(connection, methodName, args);
         }
@@ -429,16 +429,18 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     /// <summary>Delivers a hub method invocation to all locally tracked connections in a group, optionally excluding some.</summary>
     private void DeliverToGroup(string groupName, string methodName, object?[] args, IReadOnlyList<string> excluded)
     {
-        if (_groups.TryGetValue(groupName, out var group))
+        if (!_groups.TryGetValue(groupName, out HubConnectionCtxDictionary? group))
         {
-            var excludedSet = excluded.Count > 0 ? new HashSet<string>(excluded, StringComparer.Ordinal) : null;
+            return;
+        }
 
-            foreach (var (id, connection) in group)
+        HashSet<string>? excludedSet = excluded.Count > 0 ? new HashSet<string>(excluded, StringComparer.Ordinal) : null;
+
+        foreach ((string id, HubConnectionContext connection) in group)
+        {
+            if (excludedSet is null || !excludedSet.Contains(id))
             {
-                if (excludedSet is null || !excludedSet.Contains(id))
-                {
-                    _ = WriteToConnectionAsync(connection, methodName, args);
-                }
+                _ = WriteToConnectionAsync(connection, methodName, args);
             }
         }
     }
@@ -446,12 +448,14 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     /// <summary>Delivers a hub method invocation to all locally tracked connections belonging to a user.</summary>
     private void DeliverToUser(string userId, string methodName, object?[] args)
     {
-        if (_users.TryGetValue(userId, out var userConnections))
+        if (!_users.TryGetValue(userId, out HubConnectionCtxDictionary? userConnections))
         {
-            foreach (var connection in userConnections.Values)
-            {
-                _ = WriteToConnectionAsync(connection, methodName, args);
-            }
+            return;
+        }
+
+        foreach (HubConnectionContext connection in userConnections.Values)
+        {
+            _ = WriteToConnectionAsync(connection, methodName, args);
         }
     }
 
@@ -464,7 +468,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to write backplane message to connection '{ConnectionId}'.", connection.ConnectionId);
+            _logger.LogWarning(ex, "Failed to write backplane message to connection '{ConnectionId}'", connection.ConnectionId);
         }
     }
 
