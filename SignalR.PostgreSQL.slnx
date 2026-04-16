@@ -3,6 +3,7 @@
     <File Path=".gitignore" />
     <File Path="Directory.Build.props" />
     <File Path="LICENSE" />
+    <File Path="version.json" />
   </Folder>
   <Folder Name="/spike/">
     <File Path="spike/Spike.AppHost/apphost.cs" />
