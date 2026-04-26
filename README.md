@@ -23,7 +23,8 @@ Each call to a `Send*` method (e.g. `SendAllAsync`, `SendGroupAsync`) serialises
 - LISTEN/NOTIFY is a first-class PostgreSQL feature, stable and well-understood.
 - Suitable for low-to-medium throughput real-time workloads where a dedicated message broker is overkill.
 
-> **Note:** For very high throughput or guaranteed message delivery, consider a dedicated message broker (e.g. Redis, RabbitMQ). See [Limitations](#limitations).
+> [!NOTE]  
+> For very high throughput or guaranteed message delivery, consider a dedicated message broker (e.g. Redis, RabbitMQ). See [Limitations](#limitations).
 
 &nbsp;
 
@@ -124,21 +125,20 @@ ISignalRServerBuilder AddPostgreSqlBackplane(this ISignalRServerBuilder builder,
 
 ```
 ┌─────────────────────────┐           ┌─────────────────────────┐
-│      Server Instance A  │           │      Server Instance B  │
+│    Server Instance A    │           │    Server Instance B    │
 │                         │           │                         │
-│  Hub.SendAllAsync(...)  │──NOTIFY──▶│  pg_notify recv         │
+│  Hub.SendAllAsync(...)  │ ─NOTIFY─> │  pg_notify recv         │
 │                         │           │  → dispatch to clients  │
-│  LISTEN signalr__hub    │◀──NOTIFY──│  Hub.SendAllAsync(...)  │
+│  LISTEN signalr__hub    │ <─NOTIFY─ │  Hub.SendAllAsync(...)  │
 │  → dispatch to clients  │           │                         │
-└────────────┬────────────┘           └────────────┬────────────┘
-             │                                     │
-             └──────────────┬──────────────────────┘
-                            │
-                    ┌───────▼───────┐
-                    │  PostgreSQL   │
-                    │  LISTEN/      │
-                    │  NOTIFY       │
-                    └───────────────┘
+└────────────┬────────────┘           └─────────────┬───────────┘
+             │                                      │
+             └────────────────┬─────────────────────┘
+                              │
+                      ┌───────▼───────┐
+                      │  PostgreSQL   │
+                      │ LISTEN/NOTIFY │
+                      └───────────────┘
 ```
 
 1. **On startup**, `PostgreSqlHubLifetimeManager<THub>` opens a dedicated long-lived PostgreSQL connection and issues `LISTEN "signalr__{hubname}"`.
@@ -218,5 +218,5 @@ Contributions, bug reports, and feature requests are welcome. Please open an iss
 
 ## License
 
-This project is licensed under the [Apache License 2.0](LICENSE).  
-© 2026 [Nodsoft Systems](https://github.com/Nodsoft) — authored by Sakura Akeno Isayeki.
+This project is licensed under the [MIT License](LICENSE).  
+© 2026 [Nodsoft Systems](https://github.com/Nodsoft) — authored by [Sakura Akeno Isayeki](https://github.com/SakuraIsayeki).

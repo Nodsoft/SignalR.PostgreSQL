@@ -11,8 +11,8 @@ Namespace: `Nodsoft.AspNetCore.SignalR.PostgreSQL`
 ```csharp
 public sealed class PostgreSqlBackplaneOptions
 {
-    public string?          ConnectionString { get; set; }
-    public NpgsqlDataSource? DataSource      { get; set; }
+    public string? ConnectionString { get; set; }
+    public NpgsqlDataSource? DataSource { get; set; }
 }
 ```
 
