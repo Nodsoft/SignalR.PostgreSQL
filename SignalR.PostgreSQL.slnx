@@ -1,0 +1,24 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".gitignore" />
+    <File Path="Directory.Build.props" />
+    <File Path="LICENSE" />
+    <File Path="version.json" />
+  </Folder>
+  <Folder Name="/spike/">
+    <File Path="spike/Spike.AppHost/apphost.cs" />
+    <File Path="spike/Spike.AppHost/apphost.run.json" />
+    <File Path="spike/Spike.AppHost/aspire.config.json" />
+    <Project Path="spike/Spike.Client/Spike.Client.csproj" />
+    <Project Path="spike/Spike.Common/Spike.Common.csproj" />
+    <Project Path="spike/Spike.Server/Spike.Server.csproj" />
+    <Project Path="spike/Spike.ServiceDefaults/Spike.ServiceDefaults.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Nodsoft.AspNetCore.SignalR.PostgreSQL/Nodsoft.AspNetCore.SignalR.PostgreSQL.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Nodsoft.AspNetCore.SignalR.PostgreSQL.IntegrationTests/Nodsoft.AspNetCore.SignalR.PostgreSQL.IntegrationTests.csproj" />
+    <Project Path="tests/Nodsoft.AspNetCore.SignalR.PostgreSQL.Tests/Nodsoft.AspNetCore.SignalR.PostgreSQL.Tests.csproj" />
+  </Folder>
+</Solution>

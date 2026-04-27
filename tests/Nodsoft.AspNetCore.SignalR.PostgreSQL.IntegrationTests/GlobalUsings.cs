@@ -1,0 +1,9 @@
+global using Microsoft.AspNetCore.Connections;
+global using Microsoft.AspNetCore.SignalR;
+global using Microsoft.AspNetCore.SignalR.Protocol;
+global using Microsoft.Extensions.Logging.Abstractions;
+global using Microsoft.Extensions.Options;
+global using Nodsoft.AspNetCore.SignalR.PostgreSQL;
+global using Nodsoft.AspNetCore.SignalR.PostgreSQL.IntegrationTests.Fixtures;
+global using Nodsoft.AspNetCore.SignalR.PostgreSQL.IntegrationTests.Helpers;
+global using Npgsql;

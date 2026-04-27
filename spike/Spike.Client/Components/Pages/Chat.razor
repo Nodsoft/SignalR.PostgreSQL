@@ -1,0 +1,317 @@
+@page "/chat"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@inject IConfiguration Configuration
+
+<PageTitle>Chat – SignalR Spike</PageTitle>
+
+<h1>SignalR Chat</h1>
+<p>Tests broadcast, group messaging, and direct user messaging via the PostgreSQL backplane.</p>
+
+@if (_connection is null || _connectionState == HubConnectionState.Disconnected)
+{
+    <div class="mb-3">
+        <label for="username" class="form-label">Your username</label>
+        <input id="username" class="form-control" style="max-width:300px"
+               @bind="_username" @bind:event="oninput" placeholder="Enter a username" />
+    </div>
+    <button class="btn btn-primary" @onclick="ConnectAsync" disabled="@string.IsNullOrWhiteSpace(_username)">
+        Connect
+    </button>
+}
+else
+{
+    <div class="mb-3 d-flex align-items-center gap-2">
+        <span class="badge @ConnectionBadgeClass">@_connectionState</span>
+        <strong>@_username</strong>
+        <button class="btn btn-sm btn-outline-danger ms-auto" @onclick="DisconnectAsync">Disconnect</button>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <!-- Broadcast -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">📢 Broadcast (all clients)</div>
+                <div class="card-body d-flex gap-2">
+                    <input class="form-control" @bind="_broadcastContent" placeholder="Message…" @onkeydown="@(e => OnEnterKey(e, SendBroadcastAsync))" />
+                    <button class="btn btn-primary" @onclick="SendBroadcastAsync"
+                            disabled="@string.IsNullOrWhiteSpace(_broadcastContent)">Send</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Group -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">👥 Group messaging</div>
+                <div class="card-body">
+                    <div class="d-flex gap-2 mb-2">
+                        <input class="form-control" @bind="_groupName" placeholder="Group name" />
+                        <button class="btn btn-outline-success" @onclick="JoinGroupAsync"
+                                disabled="@string.IsNullOrWhiteSpace(_groupName)">Join</button>
+                        <button class="btn btn-outline-warning" @onclick="LeaveGroupAsync"
+                                disabled="@(string.IsNullOrWhiteSpace(_groupName) || !_joinedGroups.Contains(_groupName))">Leave</button>
+                    </div>
+                    @if (_joinedGroups.Count > 0)
+                    {
+                        <p class="text-muted small mb-2">Joined: @string.Join(", ", _joinedGroups)</p>
+                    }
+                    <div class="d-flex gap-2">
+                        <input class="form-control" @bind="_groupContent" placeholder="Message to group…"
+                               @onkeydown="@(e => OnEnterKey(e, SendGroupMessageAsync))" />
+                        <button class="btn btn-primary" @onclick="SendGroupMessageAsync"
+                                disabled="@(string.IsNullOrWhiteSpace(_groupContent) || string.IsNullOrWhiteSpace(_groupName))">Send</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Direct -->
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">✉️ Direct message (by username)</div>
+                <div class="card-body d-flex gap-2">
+                    <input class="form-control" @bind="_targetUser" placeholder="Target username" style="max-width:150px" />
+                    <input class="form-control" @bind="_dmContent" placeholder="Message…"
+                           @onkeydown="@(e => OnEnterKey(e, SendDirectMessageAsync))" />
+                    <button class="btn btn-primary" @onclick="SendDirectMessageAsync"
+                            disabled="@(string.IsNullOrWhiteSpace(_dmContent) || string.IsNullOrWhiteSpace(_targetUser))">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Message log -->
+    <div class="card">
+        <div class="card-header d-flex justify-content-between">
+            <span>📨 Message log</span>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="() => _messages.Clear()">Clear</button>
+        </div>
+        <div class="card-body p-0">
+            <ul class="list-group list-group-flush" style="max-height:400px;overflow-y:auto" id="message-log">
+                @foreach (var (msg, level) in _messages)
+                {
+                    <li class="list-group-item @level">
+                        <span class="text-muted small">@msg.Timestamp.ToLocalTime().ToString("HH:mm:ss")</span>
+                        @if (msg.GroupName is not null)
+                        {
+                            <span class="badge bg-info text-dark ms-1">@msg.GroupName</span>
+                        }
+                        <strong class="ms-1">@msg.Username:</strong> @msg.Content
+                    </li>
+                }
+                @if (_messages.Count == 0)
+                {
+                    <li class="list-group-item text-muted">No messages yet.</li>
+                }
+            </ul>
+        </div>
+    </div>
+
+    @if (_statusMessages.Count > 0)
+    {
+        <ul class="list-group mt-3">
+            @foreach (var status in _statusMessages.TakeLast(5))
+            {
+                <li class="list-group-item list-group-item-secondary small">@status</li>
+            }
+        </ul>
+    }
+}
+
+@if (_error is not null)
+{
+    <div class="alert alert-danger mt-3">@_error</div>
+}
+
+@code {
+    private string HubUrl => Configuration["SignalR:HubUrl"] ?? "http://localhost:5082/hubs/chat";
+
+    private HubConnection? _connection;
+    private HubConnectionState _connectionState = HubConnectionState.Disconnected;
+
+    private string _username = string.Empty;
+    private string _broadcastContent = string.Empty;
+    private string _groupName = string.Empty;
+    private string _groupContent = string.Empty;
+    private string _targetUser = string.Empty;
+    private string _dmContent = string.Empty;
+    private string? _error;
+
+    private readonly List<(ChatMessage Msg, string CssClass)> _messages = [];
+    private readonly List<string> _statusMessages = [];
+    private readonly HashSet<string> _joinedGroups = [];
+
+    private string ConnectionBadgeClass => _connectionState switch
+    {
+        HubConnectionState.Connected    => "bg-success",
+        HubConnectionState.Connecting   => "bg-warning text-dark",
+        HubConnectionState.Reconnecting => "bg-warning text-dark",
+        _                               => "bg-secondary",
+    };
+
+    // ── Connection lifecycle ────────────────────────────────────────────────
+
+    private async Task ConnectAsync()
+    {
+        _error = null;
+
+        try
+        {
+            // NOTE: Spike/demo only – username is passed as a query string parameter.
+            // Production code should use proper authentication (JWT/cookies) instead.
+            var url = $"{HubUrl}?username={Uri.EscapeDataString(_username)}";
+
+            _connection = new HubConnectionBuilder()
+                .WithUrl(url)
+                .WithAutomaticReconnect()
+                .Build();
+
+            _connection.On<ChatMessage>(nameof(IChatClient.ReceiveMessage), msg =>
+            {
+                var cssClass = msg.Username == "System" ? "list-group-item-light" : string.Empty;
+                _messages.Add((msg, cssClass));
+                InvokeAsync(StateHasChanged);
+            });
+
+            _connection.On<string>(nameof(IChatClient.UserJoined), user =>
+            {
+                _statusMessages.Add($"👋 {user} joined");
+                InvokeAsync(StateHasChanged);
+            });
+
+            _connection.On<string>(nameof(IChatClient.UserLeft), user =>
+            {
+                _statusMessages.Add($"👋 {user} left");
+                InvokeAsync(StateHasChanged);
+            });
+
+            _connection.On<string>(nameof(IChatClient.JoinedGroup), group =>
+            {
+                _joinedGroups.Add(group);
+                _statusMessages.Add($"✅ Joined group '{group}'");
+                InvokeAsync(StateHasChanged);
+            });
+
+            _connection.On<string>(nameof(IChatClient.LeftGroup), group =>
+            {
+                _joinedGroups.Remove(group);
+                _statusMessages.Add($"🚫 Left group '{group}'");
+                InvokeAsync(StateHasChanged);
+            });
+
+            _connection.Reconnected += _ =>
+            {
+                _connectionState = HubConnectionState.Connected;
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            _connection.Closed += ex =>
+            {
+                _connectionState = HubConnectionState.Disconnected;
+                if (ex is not null)
+                {
+                    _error = ex.Message;
+                }
+
+                InvokeAsync(StateHasChanged);
+                return Task.CompletedTask;
+            };
+
+            await _connection.StartAsync();
+            _connectionState = _connection.State;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Connection failed: {ex.Message}";
+            _connection = null;
+        }
+    }
+
+    private async Task DisconnectAsync()
+    {
+        if (_connection is not null)
+        {
+            await _connection.StopAsync();
+            await _connection.DisposeAsync();
+            _connection = null;
+            _joinedGroups.Clear();
+        }
+
+        _connectionState = HubConnectionState.Disconnected;
+    }
+
+    // ── Hub actions ─────────────────────────────────────────────────────────
+
+    private async Task SendBroadcastAsync()
+    {
+        if (_connection is null || string.IsNullOrWhiteSpace(_broadcastContent))
+        {
+            return;
+        }
+
+        await _connection.InvokeAsync("SendMessage", _broadcastContent);
+        _broadcastContent = string.Empty;
+    }
+
+    private async Task SendGroupMessageAsync()
+    {
+        if (_connection is null || string.IsNullOrWhiteSpace(_groupContent) || string.IsNullOrWhiteSpace(_groupName))
+        {
+            return;
+        }
+
+        await _connection.InvokeAsync("SendToGroup", _groupName, _groupContent);
+        _groupContent = string.Empty;
+    }
+
+    private async Task SendDirectMessageAsync()
+    {
+        if (_connection is null || string.IsNullOrWhiteSpace(_dmContent) || string.IsNullOrWhiteSpace(_targetUser))
+        {
+            return;
+        }
+
+        await _connection.InvokeAsync("SendToUser", _targetUser, _dmContent);
+        _dmContent = string.Empty;
+    }
+
+    private async Task JoinGroupAsync()
+    {
+        if (_connection is null || string.IsNullOrWhiteSpace(_groupName))
+        {
+            return;
+        }
+
+        await _connection.InvokeAsync("JoinGroup", _groupName);
+    }
+
+    private async Task LeaveGroupAsync()
+    {
+        if (_connection is null || string.IsNullOrWhiteSpace(_groupName))
+        {
+            return;
+        }
+
+        await _connection.InvokeAsync("LeaveGroup", _groupName);
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private async Task OnEnterKey(KeyboardEventArgs e, Func<Task> action)
+    {
+        if (e.Key == "Enter")
+        {
+            await action();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_connection is not null)
+        {
+            await _connection.DisposeAsync();
+        }
+    }
+}
