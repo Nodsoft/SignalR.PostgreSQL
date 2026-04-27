@@ -1,0 +1,44 @@
+﻿name: .NET Build & Test
+
+permissions:
+  contents: read
+
+
+on:
+  push:
+    paths-ignore:
+      - 'docs/**'
+  pull_request:
+  workflow_call:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    
+    runs-on: ${{ matrix.os }}
+
+    # Actions pinned to commits to prevent supply-chain attacks.
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # avoid shallow clone so nbgv can do its work.
+
+      - name: Setup dotnet
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        with:
+          dotnet-version: '10.0'
+
+      - uses: dotnet/nbgv@3cf2d96c2aa00675081b59f401356ac1fb81092f # v0.5.1
+        id: nbgv
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore
+
+      - name: Test
+        run: dotnet test --no-build --verbosity normal

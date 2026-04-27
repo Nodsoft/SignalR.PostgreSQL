@@ -1,0 +1,90 @@
+﻿name: Publish NuGet packages
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+# Controls when the action will run. 
+on:
+  push:
+    branches: [ main ]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    uses: ./.github/workflows/build.yml
+
+  publish-nuget:
+    name: Publish NuGet package
+    runs-on: ubuntu-latest
+    needs:
+      - build-test
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Sources to publish to
+        nuget: [
+          { name: "NuGet", source: "https://api.nuget.org/v3/index.json", keyname: "NUGET_TOKEN" },
+          { name: "GitHub Packages", source: "https://nuget.pkg.github.com/Nodsoft", keyname: "GITHUB_TOKEN" }
+        ]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # avoid shallow clone so nbgv can do its work.
+
+      - name: Setup dotnet
+        uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+        with:
+          dotnet-version: '8.0'
+
+      - name: Setup NuGet CLI
+        uses: NuGet/setup-nuget@fd55a6f3b34392fa83fde1454582407d8c714123 # v4.0.0
+
+      - uses: dotnet/nbgv@3cf2d96c2aa00675081b59f401356ac1fb81092f # v0.5.1
+        id: nbgv
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build -c Release --no-restore
+
+      - name: Package
+        run: dotnet pack -c Release --no-build --include-symbols
+
+      - id: is-public-release
+        uses: ASzc/change-string-case-action@ecd1412d078f2e06e9eedcbaa6fcd988151c3f82 # v8
+        with:
+          string: ${{ steps.nbgv.outputs.PublicRelease }}
+
+      - name: Attest build provenance for .(s)nupkgs
+        uses: actions/attest@v4.1.0
+        # Only once per package: take nuget provider
+        if: matrix.nuget.name == 'NuGet'
+        with:
+          subject-path: "**/Release/*.nupkg"
+            
+            # Publish
+
+      - name: NuGet login (OIDC)
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        if: matrix.nuget.name == 'NuGet'
+        id: nuget_login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+
+      - name: Publish packages to ${{ matrix.nuget.name }}
+        run: |
+          dotnet nuget push "**/Release/*.nupkg" \
+          --source "${{ matrix.nuget.source }}" \
+          --symbol-source "${{ matrix.nuget.source }}" \
+          --api-key "${{ matrix.nuget.name == 'NuGet' && steps.nuget_login.outputs.NUGET_API_KEY || secrets[matrix.nuget.keyname] }}" \
+          --symbol-api-key "${{ matrix.nuget.name == 'NuGet' && steps.nuget_login.outputs.NUGET_API_KEY || secrets[matrix.nuget.keyname] }}" \
+          --skip-duplicate
