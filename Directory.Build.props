@@ -24,7 +24,7 @@
         <PackageTags>$(CommonPackageTags)</PackageTags> <!-- Default package tags -->
 
         <PackageReadmeFile>README.md</PackageReadmeFile>
-        <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageIcon>icon.png</PackageIcon>
     </PropertyGroup>
 
