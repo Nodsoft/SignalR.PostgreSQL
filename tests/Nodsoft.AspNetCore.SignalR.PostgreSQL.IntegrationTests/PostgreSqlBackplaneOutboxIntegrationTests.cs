@@ -64,7 +64,7 @@ public sealed class PostgreSqlBackplaneOutboxIntegrationTests(PostgreSqlContaine
     {
         // Use a unique table name so this test can verify "no rows inserted" in isolation
         // from any other test that may have run.
-        string tableName = $"signalr_outbox_inline_{Guid.NewGuid():N}";
+        string tableName = $"signalr_outbox_smallpath_{Guid.NewGuid():N}";
         var manager = CreateManager(o => o.OutboxTableName = tableName);
         var conn = new FakeHubConnectionContext("inline-conn");
         await manager.OnConnectedAsync(conn);

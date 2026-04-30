@@ -1,5 +1,3 @@
-using System.Reflection;
-
 namespace Nodsoft.AspNetCore.SignalR.PostgreSQL.Tests;
 
 /// <summary>

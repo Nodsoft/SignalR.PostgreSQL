@@ -23,8 +23,11 @@ public sealed class PostgreSqlBackplaneOptions
     /// Messages whose serialized payload exceeds this threshold are routed through the
     /// outbox table when <see cref="UseOutbox"/> is <see langword="true"/>, or dropped otherwise.
     /// <para>
-    /// PostgreSQL caps NOTIFY payloads at 8000 bytes; the default value of <c>7500</c> leaves
-    /// a small safety margin. Values above 8000 are not honoured by PostgreSQL.
+    /// PostgreSQL caps each <c>NOTIFY</c> notification — including channel name and protocol
+    /// metadata — at 8000 bytes total, leaving slightly less than 8000 bytes for the payload itself.
+    /// The default value of <c>7500</c> leaves a safety margin for both the protocol overhead and
+    /// for messages whose multi-byte UTF-8 expansion is larger than expected. Values above
+    /// approximately 7900 may cause inline publishes to fail at the server.
     /// </para>
     /// </summary>
     public int InlinePayloadThresholdBytes { get; set; } = 7500;
