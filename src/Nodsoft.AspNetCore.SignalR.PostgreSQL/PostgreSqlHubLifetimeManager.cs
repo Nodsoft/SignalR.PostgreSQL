@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Protocol;
@@ -46,11 +47,26 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     /// <summary>The background task running the LISTEN loop.</summary>
     private Task? _listenTask;
 
+    /// <summary>The background task running the outbox cleanup loop, if enabled.</summary>
+    private Task? _cleanupTask;
+
     /// <summary>Cancellation source that shuts down the LISTEN loop on disposal.</summary>
     private readonly CancellationTokenSource _cts = new();
 
     /// <summary>Shared JSON serializer options used for both serializing and deserializing backplane payloads.</summary>
     private static readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
+
+    /// <summary>Effective backplane options captured at construction time.</summary>
+    private readonly PostgreSqlBackplaneOptions _options;
+
+    /// <summary>The validated, fully-qualified outbox table identifier safe for SQL interpolation.</summary>
+    private readonly string _outboxTable;
+
+    /// <summary>NOTIFY payload tag indicating the payload itself is the inline JSON message.</summary>
+    private const string InlineTag = "I:";
+
+    /// <summary>NOTIFY payload tag indicating the payload is a reference to an outbox row by UUID.</summary>
+    private const string ReferenceTag = "R:";
 
     /// <summary>
     /// Initializes a new <see cref="PostgreSqlHubLifetimeManager{THub}"/>, validates configuration,
@@ -70,6 +86,7 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         _logger = logger;
 
         var opts = options.Value;
+        _options = opts;
         _dataSource = opts.DataSource
             ?? (opts.ConnectionString is not null
                 ? NpgsqlDataSource.Create(opts.ConnectionString)
@@ -87,7 +104,30 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
 
         _channelName = $"signalr__{rawHubName}";
 
+        // Validate the outbox table identifier. A schema-qualified name is allowed,
+        // but each component must match a safe identifier pattern to be used directly in SQL.
+        var rawTable = (opts.OutboxTableName ?? string.Empty).Trim();
+        if (!System.Text.RegularExpressions.Regex.IsMatch(rawTable, @"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)?$"))
+        {
+            throw new InvalidOperationException(
+                $"OutboxTableName '{opts.OutboxTableName}' is not a valid PostgreSQL identifier. " +
+                "Use lowercase letters, digits, and underscores; an optional schema prefix is allowed.");
+        }
+
+        _outboxTable = rawTable;
+
+        if (opts.OutboxThresholdBytes <= 0 || opts.OutboxThresholdBytes > 7_900)
+        {
+            throw new InvalidOperationException(
+                "OutboxThresholdBytes must be between 1 and 7900 (PostgreSQL NOTIFY hard limit is 8000 bytes).");
+        }
+
         _listenTask = StartListeningAsync(_cts.Token);
+
+        if (opts.OutboxCleanupInterval > TimeSpan.Zero)
+        {
+            _cleanupTask = RunOutboxCleanupAsync(_cts.Token);
+        }
     }
 
     // ── Connection lifecycle ────────────────────────────────────────────────
@@ -256,24 +296,46 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     // ── Internal helpers ────────────────────────────────────────────────────
 
     /// <summary>
-    /// Serializes <paramref name="message"/> as a JSON payload and publishes it
-    /// to the PostgreSQL notification channel via <c>pg_notify</c>.
-    /// Payloads exceeding the PostgreSQL 8 KB limit are dropped with a warning.
+    /// Serializes <paramref name="message"/> as a JSON payload and publishes it to the PostgreSQL
+    /// notification channel. Payloads whose UTF-8 byte size is at or below
+    /// <see cref="PostgreSqlBackplaneOptions.OutboxThresholdBytes"/> are sent inline via <c>NOTIFY</c>
+    /// (no DB write). Larger payloads are persisted to the outbox table and a small reference
+    /// (<c>R:&lt;uuid&gt;</c>) is published via <c>NOTIFY</c> instead, allowing arbitrarily large
+    /// messages to traverse the backplane without hitting the 8 KB <c>NOTIFY</c> limit.
     /// </summary>
     private async Task PublishAsync(BackplaneMessage message, CancellationToken cancellationToken)
     {
         var payload = JsonSerializer.Serialize(message, _jsonOptions);
+        var payloadByteCount = Encoding.UTF8.GetByteCount(payload);
 
-        // PostgreSQL NOTIFY payload is limited to ~8 KB.
-        if (payload.Length > 8000)
+        if (payloadByteCount <= _options.OutboxThresholdBytes)
         {
-            _logger.LogWarning("BackplaneMessage payload exceeds 8 KB and will not be delivered via NOTIFY.");
+            // Fast path: send the payload directly via NOTIFY, no DB write.
+            await using var cmd = _dataSource.CreateCommand($"SELECT pg_notify('{_channelName}', @payload)");
+            cmd.Parameters.AddWithValue("payload", InlineTag + payload);
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
             return;
         }
 
-        await using var cmd = _dataSource.CreateCommand($"SELECT pg_notify('{_channelName}', @payload)");
-        cmd.Parameters.AddWithValue("payload", payload);
-        await cmd.ExecuteNonQueryAsync(cancellationToken);
+        // Outbox path: persist the payload and publish a reference. Done in a single round-trip
+        // via a CTE so the INSERT and pg_notify are issued in one statement.
+        var sql =
+            $"""
+             WITH ins AS (
+                 INSERT INTO {_outboxTable} (id, payload)
+                 VALUES (gen_random_uuid(), @payload)
+                 RETURNING id
+             )
+             SELECT pg_notify('{_channelName}', '{ReferenceTag}' || id::text) FROM ins
+             """;
+
+        await using var outboxCmd = _dataSource.CreateCommand(sql);
+        outboxCmd.Parameters.AddWithValue("payload", payload);
+        await outboxCmd.ExecuteNonQueryAsync(cancellationToken);
+
+        _logger.LogDebug(
+            "Backplane payload of {Bytes} bytes exceeded inline threshold ({Threshold}); persisted to outbox '{Table}'.",
+            payloadByteCount, _options.OutboxThresholdBytes, _outboxTable);
     }
 
     /// <summary>Serializes the given argument array to <see cref="JsonElement"/> values suitable for JSON transport.</summary>
@@ -290,10 +352,21 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     /// </summary>
     private async Task StartListeningAsync(CancellationToken cancellationToken)
     {
+        // Ensure the outbox table exists once before opening the listen connection.
+        // The CREATE TABLE/INDEX statements are idempotent, so retrying on reconnect is harmless,
+        // but we only need to do this once on initial startup.
+        var schemaInitialized = false;
+
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
+                if (!schemaInitialized)
+                {
+                    await EnsureOutboxTableAsync(cancellationToken);
+                    schemaInitialized = true;
+                }
+
                 _listenConnection = await _dataSource.OpenConnectionAsync(cancellationToken);
                 _listenConnection.Notification += OnNotification;
 
@@ -328,16 +401,84 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
     }
 
     /// <summary>
-    /// Handles a PostgreSQL notification event by deserializing the payload into a
-    /// <see cref="BackplaneMessage"/> and routing it to the appropriate local connections.
+    /// Handles a PostgreSQL notification event. The payload is tagged with one of:
+    /// <list type="bullet">
+    /// <item><c>I:&lt;json&gt;</c> — the JSON body follows directly and is processed inline.</item>
+    /// <item><c>R:&lt;uuid&gt;</c> — the body is a reference to a row in the outbox table whose payload must be fetched.</item>
+    /// </list>
+    /// Reference resolution is dispatched to a fire-and-forget task because the Npgsql notification
+    /// callback is synchronous and must not block the LISTEN connection.
     /// </summary>
     private void OnNotification(object sender, NpgsqlNotificationEventArgs e)
+    {
+        var raw = e.Payload;
+
+        if (raw.StartsWith(InlineTag, StringComparison.Ordinal))
+        {
+            ProcessPayload(raw.AsSpan(InlineTag.Length).ToString());
+            return;
+        }
+
+        if (raw.StartsWith(ReferenceTag, StringComparison.Ordinal))
+        {
+            var idText = raw[ReferenceTag.Length..];
+            if (!Guid.TryParse(idText, out var id))
+            {
+                _logger.LogWarning("Received outbox reference notification with invalid UUID '{Id}'.", idText);
+                return;
+            }
+
+            _ = ResolveAndProcessOutboxAsync(id, _cts.Token);
+            return;
+        }
+
+        _logger.LogWarning("Received backplane notification with unrecognized tag; dropping.");
+    }
+
+    /// <summary>
+    /// Fetches an outbox payload by id and routes it through <see cref="ProcessPayload"/>.
+    /// Logs and swallows any failures; the cleanup loop will reclaim the row on its TTL.
+    /// </summary>
+    private async Task ResolveAndProcessOutboxAsync(Guid id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var cmd = _dataSource.CreateCommand($"SELECT payload FROM {_outboxTable} WHERE id = @id");
+            cmd.Parameters.AddWithValue("id", id);
+
+            var result = await cmd.ExecuteScalarAsync(cancellationToken);
+            if (result is string payload)
+            {
+                ProcessPayload(payload);
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Outbox row '{Id}' was not found when resolving a backplane reference. " +
+                    "It may have been purged by the cleanup loop before delivery completed.",
+                    id);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // shutdown
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to resolve outbox payload for id '{Id}'.", id);
+        }
+    }
+
+    /// <summary>
+    /// Deserializes a backplane payload JSON string and routes it to the appropriate local connections.
+    /// </summary>
+    private void ProcessPayload(string payload)
     {
         BackplaneMessage? message;
 
         try
         {
-            message = JsonSerializer.Deserialize<BackplaneMessage>(e.Payload, _jsonOptions);
+            message = JsonSerializer.Deserialize<BackplaneMessage>(payload, _jsonOptions);
         }
         catch (JsonException ex)
         {
@@ -402,6 +543,79 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
                 }
 
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Idempotently creates the outbox table and its supporting index if they do not yet exist.
+    /// Invoked once on startup; safe for concurrent execution by multiple server instances.
+    /// </summary>
+    private async Task EnsureOutboxTableAsync(CancellationToken cancellationToken)
+    {
+        // Index name must not be schema-qualified, so derive it from the unqualified table name.
+        // The validation regex permits at most one dot, so a single IndexOf is sufficient.
+        var unqualifiedTable = _outboxTable.Contains('.', StringComparison.Ordinal)
+            ? _outboxTable[(_outboxTable.IndexOf('.', StringComparison.Ordinal) + 1)..]
+            : _outboxTable;
+
+        var sql =
+            $"""
+             CREATE TABLE IF NOT EXISTS {_outboxTable} (
+                 id UUID PRIMARY KEY,
+                 payload TEXT NOT NULL,
+                 created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+             );
+             CREATE INDEX IF NOT EXISTS {unqualifiedTable}_created_at_idx ON {_outboxTable} (created_at);
+             """;
+
+        await using var cmd = _dataSource.CreateCommand(sql);
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+
+        _logger.LogInformation("PostgreSQL backplane outbox table '{Table}' is ready.", _outboxTable);
+    }
+
+    /// <summary>
+    /// Background loop that periodically deletes outbox rows older than
+    /// <see cref="PostgreSqlBackplaneOptions.OutboxRetention"/>. Errors are logged and the loop continues.
+    /// </summary>
+    private async Task RunOutboxCleanupAsync(CancellationToken cancellationToken)
+    {
+        var interval = _options.OutboxCleanupInterval;
+        var retention = _options.OutboxRetention;
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(interval, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            try
+            {
+                // Compute cutoff server-side using PostgreSQL's now() so the threshold reflects the
+                // actual execution time rather than the moment the command was constructed.
+                await using var cmd = _dataSource.CreateCommand(
+                    $"DELETE FROM {_outboxTable} WHERE created_at < now() - @retention");
+                cmd.Parameters.AddWithValue("retention", retention);
+
+                var deleted = await cmd.ExecuteNonQueryAsync(cancellationToken);
+                if (deleted > 0)
+                {
+                    _logger.LogDebug("Outbox cleanup deleted {Count} expired row(s) from '{Table}'.", deleted, _outboxTable);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Outbox cleanup iteration failed; will retry after {Interval}.", interval);
+            }
         }
     }
 
@@ -480,6 +694,12 @@ public sealed class PostgreSqlHubLifetimeManager<THub> : HubLifetimeManager<THub
         if (_listenTask is not null)
         {
             try { await _listenTask; }
+            catch (OperationCanceledException) { /* expected */ }
+        }
+
+        if (_cleanupTask is not null)
+        {
+            try { await _cleanupTask; }
             catch (OperationCanceledException) { /* expected */ }
         }
 
