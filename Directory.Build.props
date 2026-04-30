@@ -17,13 +17,14 @@
         <Authors>Sakura Akeno Isayeki</Authors>
         <Title>PostgreSQL Backplane for SignalR Core</Title>
         <Product>PostgreSQL Backplane for SignalR Core</Product>
+        <Description>A PostgreSQL backplane for ASP.NET Core SignalR, enabling real-time communication across multiple servers/instances.</Description>
         <RepositoryUrl>https://github.com/Nodsoft/SignalR.PostgreSQL</RepositoryUrl>
         <RepositoryType>git</RepositoryType>
         <CommonPackageTags>aspnetcore, signalr, postgres, backplane</CommonPackageTags>
         <PackageTags>$(CommonPackageTags)</PackageTags> <!-- Default package tags -->
 
         <PackageReadmeFile>README.md</PackageReadmeFile>
-        <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageIcon>icon.png</PackageIcon>
     </PropertyGroup>
 

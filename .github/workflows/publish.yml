@@ -41,7 +41,7 @@ jobs:
       - name: Setup dotnet
         uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
         with:
-          dotnet-version: '8.0'
+          dotnet-version: '10.0'
 
       - name: Setup NuGet CLI
         uses: NuGet/setup-nuget@fd55a6f3b34392fa83fde1454582407d8c714123 # v4.0.0
@@ -68,7 +68,7 @@ jobs:
         # Only once per package: take nuget provider
         if: matrix.nuget.name == 'NuGet'
         with:
-          subject-path: "**/Release/*.nupkg"
+          subject-path: "src/**/Release/*.nupkg"
             
             # Publish
 
@@ -82,7 +82,7 @@ jobs:
 
       - name: Publish packages to ${{ matrix.nuget.name }}
         run: |
-          dotnet nuget push "**/Release/*.nupkg" \
+          dotnet nuget push "src/**/Release/*.nupkg" \
           --source "${{ matrix.nuget.source }}" \
           --symbol-source "${{ matrix.nuget.source }}" \
           --api-key "${{ matrix.nuget.name == 'NuGet' && steps.nuget_login.outputs.NUGET_API_KEY || secrets[matrix.nuget.keyname] }}" \
