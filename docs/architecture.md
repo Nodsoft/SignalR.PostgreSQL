@@ -33,7 +33,8 @@ Nodsoft.AspNetCore.SignalR.PostgreSQL
 ├── PostgreSqlSignalRBuilderExtensions         (public) – ISignalRServerBuilder extensions
 └── Internal/
     ├── BackplaneMessage                       (internal record) – wire format
-    └── BackplaneMessageType                   (internal enum)   – routing strategy
+    ├── BackplaneMessageType                   (internal enum)   – routing strategy
+    └── OutboxNotification                     (internal record) – small reference payload sent through NOTIFY when a message is staged in the outbox table
 ```
 
 ### `PostgreSqlHubLifetimeManager<THub>`
@@ -107,16 +108,31 @@ PostgreSqlHubLifetimeManager<THub>.SendAllAsync(...)
   │  builds BackplaneMessage { Type=All, MethodName="Chat", Args=[...] }
   ▼
 PublishAsync(message, ct)
-  │  JsonSerializer.Serialize → payload string
-  │  guard: payload.Length > 8000 → LogWarning + return
-  ▼
-NpgsqlDataSource.CreateCommand("SELECT pg_notify(@channel, @payload)")
-  │  execute non-query
-  ▼
-PostgreSQL broadcasts NOTIFY to all LISTEN subscribers
+  │  JsonSerializer.Serialize → payload
+  │  Encoding.UTF8.GetByteCount(payload) → byteLen
+  │
+  ├── byteLen ≤ InlinePayloadThresholdBytes  → PublishInlineAsync
+  │       │
+  │       ▼
+  │     NpgsqlDataSource.CreateCommand("SELECT pg_notify(@channel, @payload)")
+  │       │  execute non-query  ← single round-trip, no extra writes
+  │       ▼
+  │     PostgreSQL broadcasts NOTIFY to all LISTEN subscribers
+  │
+  └── byteLen > InlinePayloadThresholdBytes  → PublishViaOutboxAsync   (when UseOutbox = true)
+          │                                          (else: LogWarning + drop)
+          ▼
+        WITH ins AS (
+          INSERT INTO {OutboxTableName}(id, channel, payload) VALUES (@id, @channel, @payload) RETURNING 1
+        ) SELECT pg_notify(@channel, @marker) FROM ins;
+          │  the INSERT and NOTIFY share one transaction so listeners see the row
+          │  by the time their NOTIFY fires
+          │
+          ▼
+        Schedule fire-and-forget DELETE after OutboxExpiry → row cleanup
 ```
 
-The publisher opens a **new short-lived connection** per `pg_notify` call (using the pooled `NpgsqlDataSource`). This keeps the LISTEN connection free for receiving.
+The publisher opens a **new short-lived connection** per `pg_notify` (or combined `INSERT`+`NOTIFY`) call from the pooled `NpgsqlDataSource`. This keeps the LISTEN connection free for receiving.
 
 ### Subscribe / receive path
 
@@ -136,8 +152,16 @@ NpgsqlConnection.Notification event fires
   │
   ▼
 OnNotification(sender, NpgsqlNotificationEventArgs e)
-  │  JsonSerializer.Deserialize<BackplaneMessage>(e.Payload)
-  │  guard: message.ServerInstanceId == _serverInstanceId → skip
+  │  JsonDocument.Parse(e.Payload)   ← single parse
+  │
+  ├── root has "outboxId" string property → HandleOutboxNotificationAsync(outboxId)
+  │       │  SELECT payload FROM {OutboxTableName} WHERE id = @id
+  │       │  JsonSerializer.Deserialize<BackplaneMessage>(payload)
+  │       ▼
+  │     Dispatch(message)
+  │
+  └── otherwise → JsonElement.Deserialize<BackplaneMessage>(...) → Dispatch(message)
+  │
   ▼
 Route by message.Type → DeliverTo*(methodName, args, excluded)
   │
@@ -147,6 +171,66 @@ WriteToConnectionAsync(connection, methodName, args)
   ▼
 Client receives the hub method call
 ```
+
+&nbsp;
+
+## Outbox pattern for large payloads
+
+PostgreSQL caps each `NOTIFY` payload at 8000 bytes; messages exceeding that are rejected by the server. Rather than dropping such messages, the manager stages them in an **outbox table** and sends only a tiny reference through `NOTIFY`.
+
+### Threshold
+
+The split is governed by `PostgreSqlBackplaneOptions.InlinePayloadThresholdBytes` (default `7500` UTF-8 bytes — slightly under the hard limit to leave a safety margin). Messages whose serialized payload fits within the threshold travel inline through `pg_notify` with **no additional database round-trip**, preserving the hot-path latency of the existing implementation.
+
+### Wire format
+
+When a message is staged, the `NOTIFY` carries a small JSON envelope:
+
+```json
+{ "outboxId": "0c8a4f4e3b2d4a83a9d3a2b3c4d5e6f7" }
+```
+
+Receivers detect the marker and fetch the full `BackplaneMessage` by ID from the outbox table.
+
+### Outbox table
+
+Auto-created on startup via `CREATE TABLE IF NOT EXISTS`:
+
+```sql
+CREATE TABLE IF NOT EXISTS {OutboxTableName} (
+    id         text        PRIMARY KEY,
+    channel    text        NOT NULL,
+    payload    text        NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_{OutboxTableName}_created_at
+    ON {OutboxTableName} (created_at);
+```
+
+Both `OutboxTableName` (default `signalr_backplane_outbox`) and the channel name are validated against `^[a-z0-9_]+$` at construction time to prevent SQL identifier injection.
+
+### Atomicity
+
+The publisher uses a single CTE statement to keep `INSERT` and `NOTIFY` in one implicit transaction:
+
+```sql
+WITH inserted AS (
+    INSERT INTO {OutboxTableName}(id, channel, payload) VALUES (@id, @channel, @payload) RETURNING 1
+)
+SELECT pg_notify(@channel, @marker) FROM inserted;
+```
+
+PostgreSQL only delivers `NOTIFY` events to listeners on transaction commit, so by the time a peer's `OnNotification` fires, the inserted row is committed and visible to the receiver's `SELECT`.
+
+### Cleanup
+
+After publishing, the manager schedules a fire-and-forget `DELETE` for the new row after `OutboxExpiry` (default 30 s). Receivers do **not** delete rows themselves — multiple instances may receive the same `NOTIFY`, and only one read attempt is needed per instance.
+
+If the publishing process crashes between `INSERT` and the scheduled `DELETE`, the row will linger; operators can add a periodic prune (`DELETE FROM signalr_backplane_outbox WHERE created_at < now() - interval '1 hour'`) for defence-in-depth.
+
+### Disabling the outbox
+
+Setting `UseOutbox = false` reverts to the legacy "drop oversized" behaviour: messages exceeding `InlinePayloadThresholdBytes` are dropped with a `LogWarning` and never delivered.
 
 &nbsp;
 

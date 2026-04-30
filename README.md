@@ -99,10 +99,14 @@ That's it. Every server instance that starts with this configuration will partic
 
 All backplane configuration lives in `PostgreSqlBackplaneOptions`:
 
-| Property | Type | Description |
-|---|---|---|
-| `ConnectionString` | `string?` | A standard Npgsql connection string. Used to create an `NpgsqlDataSource` internally. |
-| `DataSource` | `NpgsqlDataSource?` | A pre-configured Npgsql data source. **Takes precedence** over `ConnectionString` when both are set. |
+| Property | Type | Default | Description |
+|---|---|---|---|
+| `ConnectionString` | `string?` | _none_ | A standard Npgsql connection string. Used to create an `NpgsqlDataSource` internally. |
+| `DataSource` | `NpgsqlDataSource?` | _none_ | A pre-configured Npgsql data source. **Takes precedence** over `ConnectionString` when both are set. |
+| `InlinePayloadThresholdBytes` | `int` | `7500` | Maximum UTF-8 byte size of a serialized message that is sent inline through `pg_notify` without an extra DB round-trip. Larger messages use the outbox. |
+| `UseOutbox` | `bool` | `true` | When `true`, oversized messages are transparently relayed through an outbox table. When `false`, oversized messages are dropped with a warning. |
+| `OutboxTableName` | `string` | `signalr_backplane_outbox` | Identifier of the outbox table; must match `^[a-z0-9_]+$`. The table is auto-created on startup. |
+| `OutboxExpiry` | `TimeSpan` | `30 s` | Lifetime of an outbox row before it is cleaned up by the publisher. |
 
 Exactly one of `ConnectionString` or `DataSource` must be provided. Omitting both throws an `InvalidOperationException` at startup.
 
@@ -172,9 +176,9 @@ The backplane supports every routing target exposed by `HubLifetimeManager<THub>
 
 | Constraint | Detail |
 |---|---|
-| **Payload size** | PostgreSQL NOTIFY payloads are capped at **8 KB**. Messages that exceed this limit are dropped with a warning log (`LogWarning`). Keep hub method arguments small, or consider offloading large data to a shared store (database, blob storage) and sending only a reference. |
+| **Inline payload size** | PostgreSQL `NOTIFY` payloads are capped at **8 KB**. Messages whose serialized payload fits within `InlinePayloadThresholdBytes` (default `7500` UTF-8 bytes) are sent inline through `pg_notify` with **no extra database round-trip**. Larger messages are transparently routed through an **outbox table** (see [docs/architecture.md](docs/architecture.md#outbox-pattern-for-large-payloads)) when `UseOutbox` is enabled (the default), or dropped with a warning otherwise. |
 | **Group membership is local** | Each server instance only tracks the groups that its own locally connected clients have joined. A `SendGroupAsync` from server A reaches only the clients in that group that are connected to server A. This matches the default in-process SignalR behaviour and is sufficient when the load balancer uses sticky sessions. Sticky sessions are **strongly recommended**. |
-| **No message persistence** | NOTIFY is fire-and-forget. Messages published before a LISTEN connection is established — or during a reconnect gap — are silently lost. |
+| **No message persistence** | NOTIFY is fire-and-forget. Messages published before a LISTEN connection is established — or during a reconnect gap — are silently lost. Outbox-staged messages are also not retried; rows are deleted shortly after delivery. |
 | **Throughput** | LISTEN/NOTIFY is suitable for low-to-medium fan-out scenarios. For high-volume, high-frequency message streams consider a dedicated broker. |
 
 &nbsp;

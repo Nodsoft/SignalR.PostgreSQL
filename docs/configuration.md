@@ -13,10 +13,15 @@ public sealed class PostgreSqlBackplaneOptions
 {
     public string? ConnectionString { get; set; }
     public NpgsqlDataSource? DataSource { get; set; }
+
+    public int InlinePayloadThresholdBytes { get; set; } = 7500;
+    public bool UseOutbox { get; set; } = true;
+    public string OutboxTableName { get; set; } = "signalr_backplane_outbox";
+    public TimeSpan OutboxExpiry { get; set; } = TimeSpan.FromSeconds(30);
 }
 ```
 
-Exactly one of the two properties must be set. If neither is provided, `PostgreSqlHubLifetimeManager<THub>` throws an `InvalidOperationException` when it is first instantiated (at DI resolution time, not at registration time).
+Exactly one of `ConnectionString` / `DataSource` must be set. If neither is provided, `PostgreSqlHubLifetimeManager<THub>` throws an `InvalidOperationException` when it is first instantiated (at DI resolution time, not at registration time).
 
 ### `ConnectionString`
 
@@ -43,6 +48,61 @@ options.DataSource = new NpgsqlDataSourceBuilder(connectionString)
 Prefer this option when you need full control over the data source (e.g. custom type mappings, specific pool settings) or when you want to share the same data source between the backplane and the rest of your application.
 
 > **Note:** The backplane does **not** call `Dispose` on the `NpgsqlDataSource` it receives. Lifetime management is the caller's responsibility.
+
+&nbsp;
+
+## Outbox options
+
+The library uses an **outbox pattern** to relay messages whose serialized JSON exceeds the PostgreSQL `NOTIFY` payload limit (8 KB). Small messages still travel inline through `pg_notify` with no extra database round-trip; large messages are stored in a small table and a short reference is sent through `NOTIFY` instead. See [docs/architecture.md](architecture.md#outbox-pattern-for-large-payloads) for the full description.
+
+### `InlinePayloadThresholdBytes`
+
+The maximum UTF-8 byte size of a serialized backplane message that will be sent inline. Defaults to `7500` (the PostgreSQL hard limit is 8000 bytes; the default leaves a safety margin).
+
+```csharp
+options.InlinePayloadThresholdBytes = 7500;
+```
+
+Setting this value to `0` forces every message through the outbox — useful for testing the outbox path or when you want to keep `NOTIFY` payloads as small as possible.
+
+### `UseOutbox`
+
+When `true` (the default), oversized messages are transparently routed through the outbox table. When `false`, oversized messages are dropped with a warning log entry — useful for legacy behaviour or environments where you do not want the backplane to issue `INSERT`/`DELETE` statements.
+
+```csharp
+options.UseOutbox = false; // legacy "drop oversized" behaviour
+```
+
+### `OutboxTableName`
+
+Name of the outbox table. Must contain only lowercase letters, digits, and underscores (regex `^[a-z0-9_]+$`) to prevent SQL identifier injection. Defaults to `signalr_backplane_outbox`. The table is auto-created on first use via `CREATE TABLE IF NOT EXISTS`, so you do not have to provision it manually. Schema:
+
+```sql
+CREATE TABLE IF NOT EXISTS signalr_backplane_outbox (
+    id         text        PRIMARY KEY,
+    channel    text        NOT NULL,
+    payload    text        NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_signalr_backplane_outbox_created_at
+    ON signalr_backplane_outbox (created_at);
+```
+
+If you need to share the outbox across multiple deployments or isolate it per environment, override the name:
+
+```csharp
+options.OutboxTableName = "myapp_signalr_outbox";
+```
+
+### `OutboxExpiry`
+
+How long an outbox row lives before it is cleaned up. Defaults to `30 seconds`. After publishing, the manager schedules a fire-and-forget `DELETE` after this delay, giving all listeners a generous window to fetch the payload.
+
+```csharp
+options.OutboxExpiry = TimeSpan.FromMinutes(1);
+```
+
+> **Operational note:** If a publisher crashes between `INSERT` and the scheduled `DELETE`, an outbox row may linger. Operators are encouraged to add a periodic cleanup job (e.g. `DELETE FROM signalr_backplane_outbox WHERE created_at < now() - interval '1 hour'`) for defence-in-depth.
 
 &nbsp;
 
@@ -209,9 +269,15 @@ Both `ChatHub` and `NotificationHub` will use the PostgreSQL backplane, listenin
 |---|---|
 | `Information` | A client connected or disconnected. |
 | `Information` | LISTEN loop started on a channel. |
-| `Warning` | A backplane message payload exceeds 8 KB and is dropped. |
+| `Debug` | A message was published through the outbox table (includes outbox row ID). |
+| `Debug` | The outbox table was successfully provisioned. |
+| `Debug` | A scheduled outbox cleanup `DELETE` failed (best-effort, harmless). |
+| `Warning` | A backplane message exceeded the inline NOTIFY threshold and the outbox is disabled (the message is dropped). |
+| `Warning` | An outbox row referenced by a notification was missing or already cleaned up before delivery. |
 | `Warning` | Writing a hub method invocation to a specific connection failed. |
+| `Warning` | Failed to parse or deserialize a backplane notification payload. |
 | `Error` | The LISTEN loop encountered an error (includes reconnect notice). |
+| `Error` | The outbox table could not be provisioned. |
 
 To suppress verbose connection logs in production, increase the minimum level for this category in `appsettings.json`:
 

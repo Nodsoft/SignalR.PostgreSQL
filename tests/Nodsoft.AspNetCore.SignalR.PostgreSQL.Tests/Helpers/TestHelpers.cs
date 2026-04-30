@@ -34,11 +34,15 @@ internal static class ManagerFactory
         "Host=127.0.0.1;Port=9;Database=test;Timeout=1;Command Timeout=1;";
 
     /// <summary>Creates a <see cref="PostgreSqlHubLifetimeManager{THub}"/> backed by an unreachable data source.</summary>
-    public static PostgreSqlHubLifetimeManager<THub> Create<THub>(NpgsqlDataSource? dataSource = null)
+    public static PostgreSqlHubLifetimeManager<THub> Create<THub>(
+        NpgsqlDataSource? dataSource = null,
+        Action<PostgreSqlBackplaneOptions>? configure = null)
         where THub : Hub
     {
         dataSource ??= NpgsqlDataSource.Create(BogusConnectionString);
-        IOptions<PostgreSqlBackplaneOptions> options = Options.Create(new PostgreSqlBackplaneOptions { DataSource = dataSource });
+        PostgreSqlBackplaneOptions opts = new() { DataSource = dataSource };
+        configure?.Invoke(opts);
+        IOptions<PostgreSqlBackplaneOptions> options = Options.Create(opts);
         return new(options, NullLogger<PostgreSqlHubLifetimeManager<THub>>.Instance);
     }
 
@@ -81,6 +85,74 @@ internal static class ManagerFactory
         object?[] args)
         where THub : Hub
         => GetDeliveryMethod<THub>("DeliverToUser").Invoke(manager, [userId, methodName, args]);
+
+    /// <summary>
+    /// Invokes the private <c>PublishAsync</c> method via reflection, passing an internal
+    /// <c>BackplaneMessage</c> created via <see cref="CreateBackplaneMessage"/>.
+    /// </summary>
+    public static async Task InvokePublishAsync<THub>(
+        PostgreSqlHubLifetimeManager<THub> manager,
+        object backplaneMessage,
+        CancellationToken cancellationToken)
+        where THub : Hub
+    {
+        MethodInfo method = typeof(PostgreSqlHubLifetimeManager<THub>)
+            .GetMethod("PublishAsync", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new MissingMethodException(typeof(PostgreSqlHubLifetimeManager<THub>).FullName, "PublishAsync");
+
+        Task task = (Task)method.Invoke(manager, [backplaneMessage, cancellationToken])!;
+        await task;
+    }
+
+    /// <summary>
+    /// Invokes the private <c>OnNotification</c> handler with a synthetic Npgsql notification payload.
+    /// </summary>
+    public static void InvokeOnNotification<THub>(
+        PostgreSqlHubLifetimeManager<THub> manager,
+        string payload)
+        where THub : Hub
+    {
+        MethodInfo method = typeof(PostgreSqlHubLifetimeManager<THub>)
+            .GetMethod("OnNotification", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new MissingMethodException(typeof(PostgreSqlHubLifetimeManager<THub>).FullName, "OnNotification");
+
+        // NpgsqlNotificationEventArgs only exposes an internal ctor that consumes a wire-protocol buffer,
+        // so we synthesize the instance and populate the auto-property backing fields directly.
+        NpgsqlNotificationEventArgs e =
+            (NpgsqlNotificationEventArgs)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(NpgsqlNotificationEventArgs));
+        SetBackingField(e, "PID", 0);
+        SetBackingField(e, "Channel", "test_channel");
+        SetBackingField(e, "Payload", payload);
+
+        method.Invoke(manager, [manager, e]);
+    }
+
+    private static void SetBackingField(object instance, string propertyName, object value)
+    {
+        FieldInfo field = instance.GetType()
+            .GetField($"<{propertyName}>k__BackingField", BindingFlags.NonPublic | BindingFlags.Instance)
+            ?? throw new MissingFieldException(instance.GetType().FullName, propertyName);
+        field.SetValue(instance, value);
+    }
+
+    /// <summary>
+    /// Creates an instance of the internal <c>BackplaneMessage</c> record via reflection,
+    /// for tests that need to invoke private <c>PublishAsync</c> directly.
+    /// </summary>
+    public static object CreateBackplaneMessage(string serverInstanceId, byte type, string methodName)
+    {
+        Assembly asm = typeof(PostgreSqlHubLifetimeManager<>).Assembly;
+        Type messageType = asm.GetType("Nodsoft.AspNetCore.SignalR.PostgreSQL.Internal.BackplaneMessage")
+            ?? throw new InvalidOperationException("BackplaneMessage type not found.");
+        Type enumType = asm.GetType("Nodsoft.AspNetCore.SignalR.PostgreSQL.Internal.BackplaneMessageType")
+            ?? throw new InvalidOperationException("BackplaneMessageType enum not found.");
+
+        object instance = Activator.CreateInstance(messageType)!;
+        messageType.GetProperty("ServerInstanceId")!.SetValue(instance, serverInstanceId);
+        messageType.GetProperty("Type")!.SetValue(instance, Enum.ToObject(enumType, type));
+        messageType.GetProperty("MethodName")!.SetValue(instance, methodName);
+        return instance;
+    }
 
     private static MethodInfo GetDeliveryMethod<THub>(string name) where THub : Hub
         => typeof(PostgreSqlHubLifetimeManager<THub>)
